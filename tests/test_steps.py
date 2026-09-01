@@ -1,0 +1,365 @@
+"""Tests for the upgrade-impact-triage step scripts.
+
+Pure-function tests import the modules directly. Behavioural tests shell out,
+because the thing under test is the step contract itself: what lands on stdout,
+what lands on stderr, and the exit status.
+
+Network tests are opt-in — run with ROTE_NET_TESTS=1 to exercise the live npm,
+PyPI and crates.io endpoints. Off by default so the suite stays hermetic.
+"""
+import itertools
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+STEPS = os.path.join(os.path.dirname(HERE), "steps")
+sys.path.insert(0, STEPS)
+
+import compute_verdict          # noqa: E402
+import fetch_changelog          # noqa: E402
+import fetch_registry           # noqa: E402
+import parse_manifest           # noqa: E402
+
+FS = chr(31)
+RS = chr(30)
+
+needs_net = pytest.mark.skipif(
+    os.environ.get("ROTE_NET_TESTS") != "1",
+    reason="set ROTE_NET_TESTS=1 to run tests that hit live registries",
+)
+
+
+def run(script, *args, stdin=None):
+    proc = subprocess.run(
+        [sys.executable, os.path.join(STEPS, script), *args],
+        capture_output=True, text=True, input=stdin,
+    )
+    return proc
+
+
+def unpack(packed):
+    return [row.split(FS) for row in packed.split(RS)] if packed else []
+
+
+# --------------------------------------------------------------------------
+# parse_manifest
+# --------------------------------------------------------------------------
+
+def test_parses_package_json_and_skips_unresolvable_specs(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "dependencies": {
+            "left-pad": "^1.3.0",
+            "express": "~4.17.1",
+            "local": "file:../local",       # no registry can resolve these
+            "forked": "git+https://github.com/x/y.git",
+            "ws": "workspace:*",
+        },
+        "devDependencies": {"jest": "^29.0.0"},
+    }))
+    out = json.loads(run("parse_manifest.py", str(tmp_path)).stdout)
+    names = {r[1] for r in unpack(out["packed"])}
+    assert names == {"left-pad", "express", "jest"}
+    assert out["ecosystems"] == "npm"
+
+
+def test_parses_cargo_and_skips_path_dependencies(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname="d"\n'
+        '[dependencies]\nserde="1.0.150"\nrand={version="0.8.5"}\n'
+        'mylocal={path="../mylocal"}\n'
+    )
+    out = json.loads(run("parse_manifest.py", str(tmp_path)).stdout)
+    assert {r[1] for r in unpack(out["packed"])} == {"serde", "rand"}
+
+
+def test_parses_requirements_txt(tmp_path):
+    (tmp_path / "requirements.txt").write_text(
+        "requests>=2.20.0\n# a comment\n\n-e .\nnumpy==1.26.0  # inline\n")
+    out = json.loads(run("parse_manifest.py", str(tmp_path)).stdout)
+    assert {r[1] for r in unpack(out["packed"])} == {"requests", "numpy"}
+
+
+def test_version_specs_are_normalised():
+    assert parse_manifest.clean_version("^1.2.3") == "1.2.3"
+    assert parse_manifest.clean_version("~4.17.1") == "4.17.1"
+    assert parse_manifest.clean_version(">=2.0") == "2.0"
+    assert parse_manifest.clean_version("*") == ""
+
+
+def test_missing_root_is_a_hard_fault():
+    proc = run("parse_manifest.py", "/definitely/not/here")
+    assert proc.returncode == 2
+    assert "not a directory" in proc.stderr
+
+
+def test_empty_directory_degrades_rather_than_failing(tmp_path):
+    proc = run("parse_manifest.py", str(tmp_path))
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["ok"] is True and out["count"] == 0
+    assert "no supported manifest" in out["warning"]
+
+
+def test_unparseable_manifest_names_the_real_cause(tmp_path):
+    """A degraded source must be a visible unknown, never a silent one."""
+    (tmp_path / "package.json").write_text("{ not json")
+    proc = run("parse_manifest.py", str(tmp_path))
+    assert proc.returncode == 0
+    warning = json.loads(proc.stdout)["warning"]
+    assert "failed to parse" in warning and "package.json" in warning
+
+
+# --------------------------------------------------------------------------
+# fetch_registry
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://github.com/numpy/numpy/issues", "numpy/numpy"),   # tracker, not a repo
+    ("https://github.com/numpy/numpy", "numpy/numpy"),
+    ("git+https://github.com/psf/requests.git", "psf/requests"),
+    ("git://github.com/expressjs/express.git", "expressjs/express"),
+    ("https://github.com/serde-rs/serde/tree/master/serde", "serde-rs/serde"),
+    ("https://gitlab.com/foo/bar", ""),
+    ("https://numpy.org", ""),
+    (None, ""),
+])
+def test_repo_urls_normalise_to_owner_name(url, expected):
+    assert fetch_registry.norm_repo(url) == expected
+
+
+def test_project_url_keys_are_matched_case_insensitively():
+    """PyPI project_urls keys are author-supplied; numpy uses lowercase 'source'."""
+    numpy_style = {"homepage": "https://numpy.org",
+                   "source": "https://github.com/numpy/numpy",
+                   "tracker": "https://github.com/numpy/numpy/issues"}
+    assert fetch_registry.repo_from_urls(numpy_style) == "numpy/numpy"
+
+    other_style = {"Source Code": "https://github.com/psf/requests"}
+    assert fetch_registry.repo_from_urls(other_style) == "psf/requests"
+
+
+def test_repo_falls_back_to_any_github_url():
+    assert fetch_registry.repo_from_urls(
+        {"docs": "https://github.com/a/b/wiki"}) == "a/b"
+    assert fetch_registry.repo_from_urls({"docs": "https://example.com"}) == ""
+
+
+@pytest.mark.parametrize("cur,new,gap", [
+    ("4.17.1", "5.2.1", "major"),
+    ("2.20.0", "2.34.2", "minor"),
+    ("1.0.150", "1.0.229", "patch"),
+    ("1.3.0", "1.3.0", "none"),
+    ("2.0.0", "1.0.0", "ahead"),
+    ("", "1.0.0", "unknown"),
+])
+def test_version_gap_classification(cur, new, gap):
+    assert fetch_registry.gap_between(cur, new) == gap
+
+
+def test_unsupported_ecosystem_degrades():
+    proc = run("fetch_registry.py", "cpan", "Some::Module", "1.0")
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["ok"] is True and "unsupported ecosystem" in out["warning"]
+
+
+def test_bad_invocation_is_a_hard_fault():
+    proc = run("fetch_registry.py", "npm")
+    assert proc.returncode == 2
+    assert "usage:" in proc.stderr
+
+
+@needs_net
+@pytest.mark.parametrize("eco,name", [
+    ("npm", "left-pad"), ("pypi", "requests"), ("crates", "serde")])
+def test_live_registry_reads(eco, name):
+    out = json.loads(run("fetch_registry.py", eco, name, "0.0.1").stdout)
+    assert out["latest"], f"no version returned for {eco}/{name}"
+    assert out["repo"], f"no source repo resolved for {eco}/{name}"
+
+
+@needs_net
+def test_unknown_package_degrades_not_crashes():
+    proc = run("fetch_registry.py", "pypi", "this-package-does-not-exist-zzq", "1.0")
+    assert proc.returncode == 0
+    assert "not found" in json.loads(proc.stdout)["warning"]
+
+
+# --------------------------------------------------------------------------
+# fetch_changelog
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("tag,expected", [
+    ("v2.0.0", (2, 0, 0)), ("2.1.3", (2, 1, 3)),
+    ("rel-1.2", (1, 2, 0)), ("nightly", None)])
+def test_release_tags_yield_versions(tag, expected):
+    assert fetch_changelog.tag_version(tag) == expected
+
+
+@pytest.mark.parametrize("body,label", [
+    ("BREAKING CHANGE: dropped Python 3.7", "breaking-change"),
+    ("## Breaking\n- the old API is gone", "breaking-heading"),
+    ("- Removed the `foo()` helper", "removal"),
+    ("We renamed `parse` to `load`", "rename"),
+    ("This is backwards-incompatible with 1.x", "incompatible"),
+    ("`sniff()` will no longer guess encodings", "no-longer"),
+    ("See the migration guide before upgrading", "migration-guide"),
+])
+def test_breaking_wording_is_detected(body, label):
+    hits = {lab for pat, lab in fetch_changelog.BREAKING_PATTERNS if pat.search(body)}
+    assert label in hits
+
+
+@pytest.mark.parametrize("body", [
+    "Fixed a typo and improved performance",
+    "Added a new optional parameter",
+    "Bumped the minimum supported version of a dev dependency",
+])
+def test_routine_release_notes_are_not_flagged(body):
+    hits = {lab for pat, lab in fetch_changelog.BREAKING_PATTERNS if pat.search(body)}
+    assert hits == set()
+
+
+def test_missing_repo_reports_unknown_not_safe():
+    """No repo means we could not check, which is not the same as 'no breaking changes'."""
+    out = json.loads(run("fetch_changelog.py", "", "1.0", "2.0").stdout)
+    assert out["checked"] is False
+    assert "cannot read release notes" in out["warning"]
+
+
+# --------------------------------------------------------------------------
+# compute_verdict — the honesty invariant
+# --------------------------------------------------------------------------
+
+def _tier(direct, checked, breaking):
+    rec = {"ecosystem": "npm", "name": "x", "current": "1.0.0", "latest": "2.0.0",
+           "gap": "major", "outdated": True, "direct": direct, "files": 1,
+           "checked": checked, "breaking": breaking}
+    out = json.loads(run("compute_verdict.py", stdin=json.dumps(rec)).stdout)
+    return unpack(out["packed"])[0][0]
+
+
+@pytest.mark.parametrize("direct,checked,breaking",
+                         list(itertools.product([True, False], repeat=3)))
+def test_unreadable_notes_never_become_safe(direct, checked, breaking):
+    """The invariant the whole tool rests on.
+
+    If you import a package directly and nobody could read its release notes,
+    the answer is REVIEW. Calling that SAFE would tell someone an upgrade is
+    fine when it was never checked.
+    """
+    tier = _tier(direct, checked, breaking)
+    if direct and not checked and not breaking:
+        assert tier == "REVIEW"
+    if direct and breaking:
+        assert tier == "ACT"
+    if not direct:
+        assert tier == "SAFE"       # transitive: not your call site, not your problem
+
+
+def test_current_versions_are_not_flagged():
+    rec = {"name": "x", "outdated": False, "direct": True, "gap": "none"}
+    out = json.loads(run("compute_verdict.py", stdin=json.dumps(rec)).stdout)
+    assert out["current"] == 1 and out["act"] == 0
+
+
+def test_ranking_puts_act_first():
+    recs = [
+        {"name": "safe-one", "outdated": True, "direct": False, "gap": "major",
+         "checked": True, "breaking": True},
+        {"name": "act-one", "outdated": True, "direct": True, "gap": "major",
+         "checked": True, "breaking": True},
+        {"name": "review-one", "outdated": True, "direct": True, "gap": "minor",
+         "checked": False, "breaking": False},
+    ]
+    stdin = "\n".join(json.dumps(r) for r in recs)
+    out = json.loads(run("compute_verdict.py", stdin=stdin).stdout)
+    tiers = [row[0] for row in unpack(out["packed"])]
+    assert tiers == ["ACT", "REVIEW", "SAFE"]
+    assert out["headline"].startswith("1 of 3")
+
+
+def test_empty_input_degrades():
+    proc = run("compute_verdict.py", stdin="")
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["total"] == 0
+
+
+def test_malformed_input_is_a_hard_fault():
+    proc = run("compute_verdict.py", stdin="not json\n")
+    assert proc.returncode == 2
+    assert "not valid JSON" in proc.stderr
+
+
+# --------------------------------------------------------------------------
+# find_callsites
+# --------------------------------------------------------------------------
+
+def test_python_import_line_numbers_are_exact(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "from __future__ import annotations\n"    # 1
+        "\n"                                      # 2
+        "from dataclasses import dataclass\n"     # 3
+        "\n"                                      # 4
+        "import numpy as np\n"                    # 5
+    )
+    out = json.loads(run("find_callsites.py", str(tmp_path), "pypi", "numpy").stdout)
+    rel, line, src = unpack(out["packed"])[0]
+    assert line == "5", "a wrong line number destroys the tool's core promise"
+    assert src == "import numpy as np"
+
+
+def test_commented_out_imports_are_not_call_sites(tmp_path):
+    src = tmp_path / "a.js"
+    src.write_text(
+        "// const x = require('jest');\n"
+        "/* import jest from 'jest'; */\n"
+        "const chalk = require('chalk');\n"
+    )
+    jest = json.loads(run("find_callsites.py", str(tmp_path), "npm", "jest").stdout)
+    assert jest["direct"] is False, "a commented-out require is not a call site"
+
+    chalk = json.loads(run("find_callsites.py", str(tmp_path), "npm", "chalk").stdout)
+    assert chalk["direct"] is True
+
+
+def test_live_import_still_counts_alongside_a_commented_one(tmp_path):
+    (tmp_path / "a.js").write_text("// require('jest');\nconst j = require('jest');\n")
+    out = json.loads(run("find_callsites.py", str(tmp_path), "npm", "jest").stdout)
+    assert out["direct"] is True
+    assert unpack(out["packed"])[0][1] == "2"
+
+
+def test_scoped_and_subpath_npm_imports_match(tmp_path):
+    (tmp_path / "a.ts").write_text(
+        "import { debounce } from 'lodash/debounce';\n"
+        "import x from '@scope/pkg';\n"
+    )
+    lodash = json.loads(run("find_callsites.py", str(tmp_path), "npm", "lodash").stdout)
+    scoped = json.loads(run("find_callsites.py", str(tmp_path), "npm", "@scope/pkg").stdout)
+    assert lodash["direct"] is True and scoped["direct"] is True
+
+
+def test_rust_hyphen_names_match_underscore_imports(tmp_path):
+    (tmp_path / "m.rs").write_text("use my_crate::Thing;\n")
+    out = json.loads(run("find_callsites.py", str(tmp_path), "crates", "my-crate").stdout)
+    assert out["direct"] is True
+
+
+def test_uninstalled_package_is_reported_transitive(tmp_path):
+    (tmp_path / "m.py").write_text("import os\n")
+    out = json.loads(run("find_callsites.py", str(tmp_path), "pypi", "requests").stdout)
+    assert out["direct"] is False
+    assert "transitive" in out["note"]
+
+
+def test_vendor_directories_are_skipped(tmp_path):
+    vendored = tmp_path / "node_modules" / "pkg"
+    vendored.mkdir(parents=True)
+    (vendored / "index.js").write_text("const x = require('express');\n")
+    out = json.loads(run("find_callsites.py", str(tmp_path), "npm", "express").stdout)
+    assert out["direct"] is False, "dependencies' own imports are not your call sites"
