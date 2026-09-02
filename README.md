@@ -70,9 +70,13 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-71 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+84 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
+
+Release candidates are dropped when the same version also shipped a final release, since their
+notes are duplicates — unless prereleases are the only releases in range, where they are the only
+evidence there is.
 
 The GitHub release-notes reader is exercised end to end against a stub API served on localhost
 (`GITHUB_API_BASE`), so the path that actually reads notes — samples, markers, draft filtering,

@@ -380,6 +380,49 @@ def test_rate_limit_is_reported_and_still_flags_a_major_bump(github_stub):
     assert out["markers"] == "major-version-bump"
 
 
+@pytest.mark.parametrize("tag,expected", [
+    ("v2.5.0rc1", True), ("v2.4.0-rc.2", True), ("v1.0.0-beta.1", True),
+    ("v1.2.3a1", True), ("v3.0.0-alpha", True), ("v1.0.0.dev1", True),
+    ("v2.5.0", False), ("v1.26.4", False), ("2024.1.0", False),
+    ("v1.2.3-abc", False),                      # not an alpha, just a word
+])
+def test_prerelease_tags_are_recognised(tag, expected):
+    assert fetch_changelog.is_prerelease({"tag_name": tag}) is expected
+
+
+def test_prereleases_do_not_double_report_their_final_release(github_stub):
+    """v2.4.0 and v2.4.0rc1 carry the same notes; reporting both is noise."""
+    notes = "- Removed the `foo()` helper"
+    github_stub.reply([_release("v2.4.0rc1", notes), _release("v2.4.0", notes)])
+    out = _changelog(github_stub, "2.3.0", "2.4.0")
+
+    assert out["releases"] == 1
+    assert [row[0] for row in unpack(out["packed"])] == ["v2.4.0"]
+
+
+def test_prereleases_are_kept_when_they_are_the_only_evidence(github_stub):
+    """Dropping them here would turn a real finding into a false all-clear."""
+    github_stub.reply([_release("v2.4.0rc1", "BREAKING CHANGE: dropped `foo()`")])
+    out = _changelog(github_stub, "2.3.0", "2.4.0")
+
+    assert out["releases"] == 1
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert [row[0] for row in unpack(out["packed"])] == ["v2.4.0rc1"]
+
+
+def test_a_match_starting_on_a_blank_line_still_quotes_real_text(github_stub):
+    """`^\\s*` under re.M walks over newlines, so the match can begin on a
+    blank line. The sample must be the list item, never the empty line."""
+    github_stub.reply([_release("v2.0.0", "## Changes\n\n\n- Removed `foo()`\n")])
+    out = _changelog(github_stub, "1.0.0", "2.0.0")
+
+    samples = unpack(out["packed"])
+    assert samples, "a removal in the notes must produce a sample"
+    assert all(row[2].strip() for row in samples), "no empty sample lines"
+    assert any("Removed `foo()`" in row[2] for row in samples)
+
+
 def test_unreadable_notes_on_a_minor_bump_claim_nothing(github_stub):
     github_stub.reply({"message": "boom"}, status=500)
     out = _changelog(github_stub, "1.26.0", "1.28.0")
