@@ -437,6 +437,57 @@ def test_unreadable_notes_on_a_minor_bump_claim_nothing(github_stub):
 # compute_verdict — the honesty invariant
 # --------------------------------------------------------------------------
 
+def _rec(name, **over):
+    rec = {"ecosystem": "pypi", "name": name, "current": "1.0", "latest": "2.0",
+           "gap": "major", "outdated": True, "direct": True, "files": 3,
+           "checked": True, "breaking": True}
+    rec.update(over)
+    return rec
+
+
+def test_records_can_come_from_a_file_instead_of_stdin(tmp_path):
+    """A rote step has no TTY, so the file form is the one a Play can run."""
+    path = tmp_path / "records.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        _rec("numpy"),
+        _rec("scipy", direct=False, gap="minor"),
+    ]) + "\n")
+
+    out = json.loads(run("compute_verdict.py", str(path)).stdout)
+    assert out["ok"] is True
+    assert out["total"] == 2
+    assert out["act"] == 1
+    assert out["safe"] == 1
+    assert [row[0] for row in unpack(out["packed"])] == ["ACT", "SAFE"]
+
+
+def test_file_and_stdin_forms_agree(tmp_path):
+    records = "\n".join(json.dumps(r) for r in [_rec("numpy"), _rec("scipy")]) + "\n"
+    path = tmp_path / "records.jsonl"
+    path.write_text(records)
+
+    assert (json.loads(run("compute_verdict.py", str(path)).stdout)
+            == json.loads(run("compute_verdict.py", stdin=records).stdout))
+
+
+def test_an_unreadable_records_file_fails_closed(tmp_path):
+    """Silently triaging zero dependencies would report a false all-clear."""
+    proc = run("compute_verdict.py", str(tmp_path / "nope.jsonl"))
+    assert proc.returncode == 2
+    assert "cannot read" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_an_empty_file_is_an_honest_nothing_to_triage(tmp_path):
+    path = tmp_path / "empty.jsonl"
+    path.write_text("")
+    out = json.loads(run("compute_verdict.py", str(path)).stdout)
+    assert out["ok"] is True
+    assert out["total"] == 0
+    assert out["headline"] == "nothing to triage"
+
+
+
 def _tier(direct, checked, breaking):
     rec = {"ecosystem": "npm", "name": "x", "current": "1.0.0", "latest": "2.0.0",
            "gap": "major", "outdated": True, "direct": direct, "files": 1,

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Step 5 — join registry, changelog and call-site facts into a ranked verdict.
 
-Reads one JSON object per line on stdin, each merging what the earlier steps
-learned about a single dependency. Emits the canonical result.
+Reads one JSON object per line, each merging what the earlier steps learned
+about a single dependency, and emits the canonical result. Input comes from a
+file when a path is given and from stdin otherwise -- a rote step has no TTY,
+so the file form is what makes this capturable and runnable as a step.
 
 The ranking rule, and the reason the Play is worth running:
 
@@ -47,9 +49,23 @@ def classify(rec):
     return "SAFE", "notes read, no breaking markers"
 
 
+def open_input():
+    """The records file named on argv, or stdin when no path is given."""
+    if len(sys.argv) < 2:
+        return sys.stdin, False
+    try:
+        return open(sys.argv[1], encoding="utf-8"), True
+    except OSError as exc:
+        # A named file that cannot be read is a broken invocation, not an
+        # expected absence: failing closed beats triaging zero dependencies
+        # and reporting "nothing to triage".
+        die(f"cannot read {sys.argv[1]}: {exc}")
+
+
 def main():
+    stream, opened = open_input()
     records = []
-    for line_no, line in enumerate(sys.stdin, 1):
+    for line_no, line in enumerate(stream, 1):
         line = line.strip()
         if not line:
             continue
@@ -57,10 +73,12 @@ def main():
             records.append(json.loads(line))
         except json.JSONDecodeError as exc:
             die(f"line {line_no} is not valid JSON: {exc}")
+    if opened:
+        stream.close()
 
     if not records:
         sys.stdout.write(json.dumps({
-            "ok": True, "warning": "no dependency records on stdin",
+            "ok": True, "warning": "no dependency records on input",
             "total": 0, "act": 0, "review": 0, "safe": 0, "current": 0,
             "headline": "nothing to triage", "packed": "",
         }) + "\n")
