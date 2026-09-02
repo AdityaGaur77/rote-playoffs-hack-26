@@ -70,9 +70,13 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-63 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+71 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
+
+The GitHub release-notes reader is exercised end to end against a stub API served on localhost
+(`GITHUB_API_BASE`), so the path that actually reads notes — samples, markers, draft filtering,
+range selection, 404, rate limit, 500 — is covered without a network or a rate-limit budget.
 
 ## Optional GITHUB_TOKEN
 
@@ -80,6 +84,9 @@ The GitHub REST API allows 60 unauthenticated requests per hour and a 47-depende
 exhausts that. `GITHUB_TOKEN` raises it to 5000/hr. It is deliberately **optional**: the Play runs
 with no credentials at all and simply reports more `REVIEW` rows without one, which keeps
 `rote play inspect` showing *Authentication: none* and setup at zero for anyone adopting it.
+
+`GITHUB_API_BASE` overrides the API root (default `https://api.github.com`) for GitHub Enterprise
+installs and for the hermetic tests described above.
 
 ## Bugs found while testing
 

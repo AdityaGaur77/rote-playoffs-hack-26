@@ -7,11 +7,13 @@ what lands on stderr, and the exit status.
 Network tests are opt-in — run with ROTE_NET_TESTS=1 to exercise the live npm,
 PyPI and crates.io endpoints. Off by default so the suite stays hermetic.
 """
+import http.server
 import itertools
 import json
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -33,10 +35,11 @@ needs_net = pytest.mark.skipif(
 )
 
 
-def run(script, *args, stdin=None):
+def run(script, *args, stdin=None, env=None):
     proc = subprocess.run(
         [sys.executable, os.path.join(STEPS, script), *args],
         capture_output=True, text=True, input=stdin,
+        env={**os.environ, **env} if env else None,
     )
     return proc
 
@@ -229,6 +232,162 @@ def test_missing_repo_reports_unknown_not_safe():
     out = json.loads(run("fetch_changelog.py", "", "1.0", "2.0").stdout)
     assert out["checked"] is False
     assert "cannot read release notes" in out["warning"]
+
+
+# --- fetch_changelog: the success path, against a stub GitHub API ----------
+#
+# The live GitHub API is unreachable from some networks (and rate-limits the
+# rest), so the path that actually reads release notes is exercised against a
+# local stub via GITHUB_API_BASE. Everything below the socket is the real code.
+
+class _StubHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):                                     # noqa: N802
+        status, headers, body = self.server.reply
+        if not self.path.startswith("/repos/"):
+            status, headers, body = 404, {}, b"{}"
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):                         # keep pytest output clean
+        pass
+
+
+class _Stub:
+    def __init__(self, server):
+        self._server = server
+        host, port = server.server_address[:2]
+        self.base = f"http://{host}:{port}"
+
+    def reply(self, payload, status=200, headers=None):
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self._server.reply = (status, headers or {}, body)
+
+    @property
+    def env(self):
+        return {"GITHUB_API_BASE": self.base, "GITHUB_TOKEN": ""}
+
+
+@pytest.fixture
+def github_stub():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.reply = (200, {}, b"[]")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield _Stub(server)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _release(tag, body="Fixed a typo.", draft=False):
+    return {"tag_name": tag, "body": body, "draft": draft}
+
+
+def _changelog(stub, current, latest):
+    proc = run("fetch_changelog.py", "numpy/numpy", current, latest, env=stub.env)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_read_notes_report_breaking_with_samples(github_stub):
+    github_stub.reply([
+        _release("v1.27.0", "BREAKING CHANGE: dropped the `foo()` helper"),
+        _release("v1.26.5", "Fixed a typo."),          # at current, out of range
+        _release("v2.0.0", "See the migration guide before upgrading"),
+    ])
+    out = _changelog(github_stub, "1.26.5", "2.0.0")
+
+    assert out["ok"] is True
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert out["releases"] == 2                        # v1.26.5 is excluded
+    assert set(out["markers"].split(",")) == {"breaking-change", "migration-guide"}
+
+    samples = unpack(out["packed"])
+    assert [row[0] for row in samples] == ["v1.27.0", "v2.0.0"]
+    assert all(len(row) == 3 and row[2] for row in samples)
+
+
+def test_read_notes_on_a_clean_minor_bump_report_not_breaking(github_stub):
+    github_stub.reply([_release("v1.27.0"), _release("v1.28.0", "Added an optional flag.")])
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["checked"] is True
+    assert out["breaking"] is False
+    assert out["releases"] == 2
+    assert out["markers"] == ""
+    assert out["packed"] == ""
+
+
+def test_clean_notes_never_clear_a_major_bump(github_stub):
+    """Silence in the notes does not out-vote the major version number."""
+    github_stub.reply([_release("v2.0.0", "Performance improvements.")])
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert out["markers"] == "major-version-bump"
+    assert "major version changed" in out["note"]
+
+
+def test_draft_releases_are_ignored(github_stub):
+    github_stub.reply([
+        _release("v1.27.0", "BREAKING CHANGE: unreleased and unshipped", draft=True),
+        _release("v1.28.0", "Added an optional flag."),
+    ])
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["releases"] == 1
+    assert out["breaking"] is False
+
+
+def test_releases_outside_the_range_count_as_unchecked(github_stub):
+    github_stub.reply([_release("v0.9.0"), _release("v3.0.0", "BREAKING CHANGE: much later")])
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["checked"] is False                     # nothing in range was read
+    assert out["breaking"] is False
+    assert "no releases found between 1.26.0 and 2.0.0" in out["warning"]
+    assert out["markers"] == "major-version-bump"      # the bump still speaks
+
+
+def test_repository_without_releases_is_unknown_not_safe(github_stub):
+    github_stub.reply({"message": "Not Found"}, status=404)
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["ok"] is True
+    assert out["checked"] is False
+    assert out["breaking"] is False
+    assert "no releases published" in out["warning"]
+
+
+def test_rate_limit_is_reported_and_still_flags_a_major_bump(github_stub):
+    github_stub.reply({"message": "rate limited"}, status=403,
+                      headers={"X-RateLimit-Remaining": "0"})
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["ok"] is True                           # an expected absence, not a crash
+    assert out["checked"] is False
+    assert out["rate_limited"] is True
+    assert "rate limit" in out["warning"]
+    assert out["markers"] == "major-version-bump"
+
+
+def test_unreadable_notes_on_a_minor_bump_claim_nothing(github_stub):
+    github_stub.reply({"message": "boom"}, status=500)
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["checked"] is False
+    assert out["breaking"] is False
+    assert out["markers"] == ""                        # no evidence either way
+    assert "HTTP 500" in out["warning"]
 
 
 # --------------------------------------------------------------------------

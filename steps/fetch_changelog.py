@@ -10,6 +10,9 @@ Contract (rote step):
   notes were actually read and contained no breaking markers; `checked` says
   which of those two situations you are in.
 
+GITHUB_API_BASE overrides the API root (default https://api.github.com) for
+GitHub Enterprise installs and for hermetic tests of the success path.
+
 Rate limit: the GitHub REST API allows 60 unauthenticated requests per hour,
 and a 47-dependency project blows through that. Set GITHUB_TOKEN to raise it to
 5000/hr. The token is optional by design so the Play still runs with no
@@ -27,6 +30,12 @@ FS = chr(31)
 RS = chr(30)
 UA = "upgrade-impact-triage/0.1 (+https://play.modiqo.ai)"
 TIMEOUT = 25
+
+
+def api_base():
+    """Read at call time, not import time, so tests can point it at a stub."""
+    return (os.environ.get("GITHUB_API_BASE", "").strip()
+            or "https://api.github.com").rstrip("/")
 
 BREAKING_PATTERNS = [
     (re.compile(r"\bBREAKING[ -]CHANGES?\b", re.I), "breaking-change"),
@@ -100,7 +109,7 @@ def main():
     cur_v, new_v = parse_version(current), parse_version(latest)
 
     data, err, limited = get_json(
-        f"https://api.github.com/repos/{urllib.parse.quote(repo)}/releases?per_page=100")
+        f"{api_base()}/repos/{urllib.parse.quote(repo)}/releases?per_page=100")
     if data is None:
         base["warning"] = f"{repo}: {err}"
         base["rate_limited"] = limited
