@@ -21,9 +21,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(os.path.dirname(HERE), "steps")
 sys.path.insert(0, STEPS)
 
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+
 import compute_verdict          # noqa: E402
 import fetch_changelog          # noqa: E402
 import fetch_registry           # noqa: E402
+import inline_steps             # noqa: E402
 import parse_manifest           # noqa: E402
 
 FS = chr(31)
@@ -616,3 +619,54 @@ def test_vendor_directories_are_skipped(tmp_path):
     (vendored / "index.js").write_text("const x = require('express');\n")
     out = json.loads(run("find_callsites.py", str(tmp_path), "npm", "express").stdout)
     assert out["direct"] is False, "dependencies' own imports are not your call sites"
+
+
+# --------------------------------------------------------------------------
+# tools/inline_steps — the published Play must not point at one laptop
+# --------------------------------------------------------------------------
+
+def test_every_step_script_is_inlined():
+    table = dict(inline_steps.steps())
+    assert set(table) == {"compute_verdict", "fetch_changelog", "fetch_registry",
+                          "find_callsites", "parse_manifest"}
+    for prefix in table.values():
+        assert prefix[0] == "python3" and prefix[1] == "-c"
+
+
+def test_inlined_form_carries_no_local_path():
+    """The whole point: nothing in the argv may reference this machine."""
+    for name, prefix in inline_steps.steps():
+        joined = " ".join(prefix)
+        assert STEPS not in joined
+        assert ".py" not in prefix[2], f"{name} still names a file"
+
+
+@pytest.mark.parametrize("step,args", [
+    ("parse_manifest", ["{root}"]),
+    ("find_callsites", ["{root}", "pypi", "numpy"]),
+])
+def test_inlined_and_file_forms_agree(step, args, tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["numpy==1.26"]\n')
+    (tmp_path / "app.py").write_text("import numpy as np\n")
+    filled = [a.format(root=str(tmp_path)) for a in args]
+
+    direct = subprocess.run(
+        [sys.executable, os.path.join(STEPS, f"{step}.py"), *filled],
+        capture_output=True, text=True)
+    inlined = subprocess.run(
+        [*inline_steps.argv_prefix(os.path.join(STEPS, f"{step}.py")), *filled],
+        capture_output=True, text=True)
+
+    assert inlined.returncode == direct.returncode == 0
+    assert json.loads(inlined.stdout) == json.loads(direct.stdout)
+
+
+def test_inlined_form_preserves_a_failing_exit_code():
+    """Fail-closed has to survive the transport, or REVIEW rows become SAFE."""
+    prefix = inline_steps.argv_prefix(os.path.join(STEPS, "compute_verdict.py"))
+    proc = subprocess.run([*prefix, "/nonexistent/records.jsonl"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 2
+    assert "cannot read" in proc.stderr
+    assert proc.stdout == ""

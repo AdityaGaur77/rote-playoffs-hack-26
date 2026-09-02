@@ -70,7 +70,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-88 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+93 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 
@@ -81,6 +81,21 @@ evidence there is.
 The GitHub release-notes reader is exercised end to end against a stub API served on localhost
 (`GITHUB_API_BASE`), so the path that actually reads notes — samples, markers, draft filtering,
 range selection, 404, rate limit, 500 — is covered without a network or a rate-limit budget.
+
+## Publishing: the scripts travel with the Play
+
+A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine.
+`tools/inline_steps.py` emits a self-contained `python3 -c` argv prefix per step, so the exported
+`main.ts` carries the scripts instead of pointing at them:
+
+```bash
+python3 tools/inline_steps.py --json
+```
+
+Base64 keeps the encoded body free of quotes and shell metacharacters, and arguments still land in
+`sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
+assert the inlined and file forms produce identical output and identical exit codes, including the
+fail-closed path.
 
 ## Optional GITHUB_TOKEN
 
