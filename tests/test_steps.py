@@ -975,3 +975,18 @@ def test_every_step_in_the_play_has_a_readable_name():
                  "read_changelogs", "rank_verdict"):
         assert f" *   {name}:" in play
     assert "python3_" not in play
+
+
+def test_changelog_batch_says_why_it_could_not_read(github_stub):
+    """"checked: 0" alone does not tell you whether to set a token or a repo."""
+    github_stub.reply({"message": "forbidden"}, status=403)
+    upstream = json.dumps({"ok": True, "packed": RS.join([
+        carrier(checked="", breaking="", markers=""),
+        carrier(name="scipy", repo="", checked="", breaking="", markers=""),
+    ])})
+    proc = run("fetch_changelog.py", "--batch", upstream, env=github_stub.env)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["checked"] == 0 and out["unread"] == 2
+    assert "HTTP 403" in out["warning"]
+    assert "no GitHub repository known" in out["warning"]

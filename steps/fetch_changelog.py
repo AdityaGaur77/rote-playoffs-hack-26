@@ -267,6 +267,7 @@ def run_batch(arg):
               "checked": 0, "breaking": 0, "packed": ""})
 
     checked = breaking = limited = skipped = 0
+    warnings = []
     for row in rows:
         if row[6] != "1":                     # not outdated; nothing to compare
             skipped += 1
@@ -274,6 +275,8 @@ def run_batch(arg):
         rec = read_notes(row[4], row[2], row[3])
         if rec.get("rate_limited"):
             limited += 1
+        elif rec.get("warning"):
+            warnings.append(rec["warning"])
         row[10] = "1" if rec["checked"] else "0"
         row[11] = "1" if rec["breaking"] else "0"
         row[12] = rec["markers"]
@@ -293,6 +296,12 @@ def run_batch(arg):
         payload["warning"] = (f"{limited} changelog(s) unread: GitHub API rate limit "
                               f"reached. Set GITHUB_TOKEN to raise it to 5000/hr; "
                               f"until then these report as REVIEW, not SAFE.")
+    elif warnings:
+        # "checked: 0" on its own says nothing about why. A 403, an unknown
+        # repository and a project that tags instead of releasing all degrade to
+        # REVIEW, and they are not the same problem to fix.
+        payload["unread"] = len(warnings)
+        payload["warning"] = "; ".join(warnings[:5])
     emit(payload)
 
 

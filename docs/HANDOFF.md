@@ -178,14 +178,14 @@ tools/inline_steps.py      [--json]                           -> portable argv p
 tools/build_play.py        [--check]                          -> generates play/main.ts
 play/main.ts               generated, 64 KB                   -> the Play
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 121 tests
+tests/test_steps.py                                           -> 122 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **117 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **118 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
