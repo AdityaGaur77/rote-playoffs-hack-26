@@ -19,6 +19,8 @@ import time
 import urllib.error
 import urllib.request
 
+FS = chr(31)
+RS = chr(30)
 UA = "upgrade-impact-triage/0.1 (+https://play.modiqo.ai)"
 TIMEOUT = 20
 
@@ -156,24 +158,79 @@ def crates(name):
 FETCHERS = {"npm": npm, "pypi": pypi, "crates": crates}
 
 
-def main():
-    if len(sys.argv) < 3:
-        die("usage: fetch_registry.py <ecosystem> <name> [current_version]")
-    eco, name = sys.argv[1], sys.argv[2]
-    current = sys.argv[3] if len(sys.argv) > 3 else ""
+# ---------------------------------------------------------------------------
+# Carrier record — how dependency facts cross a step boundary.
+#
+# Each stage fills its own columns and passes the rest through, so the whole
+# triage runs as a linear DAG wired by value edges. No stage needs a file on
+# disk, and no stage needs to know how many dependencies there are.
+#
+#   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+#   1 name        4 repo     7 direct     10 checked
+#   2 current     5 gap      8 files      11 breaking
+#
+# Booleans are "1" / "0" when known and "" when the stage that fills them has
+# not run. That third state is load-bearing: an unfilled column must read as
+# UNKNOWN downstream, never as a clean bill of health.
+# ---------------------------------------------------------------------------
+COLS = 13
 
+
+def scrub(value):
+    """Field text can never contain the delimiters that frame it."""
+    return str(value).replace(FS, " ").replace(RS, " ")
+
+
+def unpack(packed):
+    """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+    rows = []
+    for chunk in (packed or "").split(RS):
+        if chunk:
+            rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+    return rows
+
+
+def repack(rows):
+    return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+
+
+def upstream_packed(arg):
+    """The previous step's output, however the value edge chose to deliver it.
+
+    A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+    accepted, so the step does not depend on whether the edge resolves
+    `.stdout.text` or `.stdout.json.packed`.
+    """
+    text = (arg or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as exc:
+        die(f"upstream payload will not parse as JSON: {exc}")
+    if not isinstance(doc, dict):
+        die("upstream payload is not a JSON object")
+    return doc.get("packed", "")
+
+
+def resolve(eco, name, current):
+    """One dependency, one registry reading.
+
+    Never raises: a remote problem is an expected absence carried in the
+    payload, so one dead package cannot kill a 47-dependency report.
+    """
     fetcher = FETCHERS.get(eco)
     base = {"ok": True, "ecosystem": eco, "name": name, "current": current,
             "latest": "", "repo": "", "gap": "unknown", "outdated": False}
 
     if not fetcher:
         base["warning"] = f"unsupported ecosystem: {eco}"
-        emit(base)
+        return base
 
     facts, err = fetcher(name)
     if facts is None:
         base["warning"] = f"{name}: {err}"
-        emit(base)
+        return base
 
     latest = facts["latest"]
     gap = gap_between(current, latest)
@@ -186,7 +243,55 @@ def main():
     })
     if not facts["repo"]:
         base["warning"] = f"{name}: no GitHub source URL published; changelog unavailable"
-    emit(base)
+    return base
+
+
+def run_batch(arg):
+    """Resolve every dependency the manifest step found, in one step.
+
+    Fills carrier columns 2-6 (current, latest, repo, gap, outdated) and leaves
+    everything else for the stages downstream.
+    """
+    rows = unpack(upstream_packed(arg))
+    if not rows:
+        emit({"ok": True, "warning": "no dependencies on input", "count": 0,
+              "resolved": 0, "outdated": 0, "packed": ""})
+
+    warnings = []
+    for row in rows:
+        rec = resolve(row[0], row[1], row[2])
+        if rec.get("warning"):
+            warnings.append(rec["warning"])
+        row[2] = rec["current"]
+        row[3] = rec["latest"]
+        row[4] = rec["repo"]
+        row[5] = rec["gap"]
+        row[6] = "1" if rec["outdated"] else "0"
+
+    payload = {
+        "ok": True,
+        "count": len(rows),
+        "resolved": len(rows) - len(warnings),
+        "outdated": sum(1 for row in rows if row[6] == "1"),
+        "packed": repack(rows),
+    }
+    if warnings:
+        payload["unresolved"] = len(warnings)
+        payload["warning"] = "; ".join(warnings[:5])
+    emit(payload)
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+        if len(sys.argv) < 3:
+            die("usage: fetch_registry.py --batch <upstream payload>")
+        run_batch(sys.argv[2])
+
+    if len(sys.argv) < 3:
+        die("usage: fetch_registry.py <ecosystem> <name> [current_version]\n"
+            "   or: fetch_registry.py --batch <upstream payload>")
+    emit(resolve(sys.argv[1], sys.argv[2],
+                 sys.argv[3] if len(sys.argv) > 3 else ""))
 
 
 if __name__ == "__main__":

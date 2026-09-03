@@ -670,3 +670,242 @@ def test_inlined_form_preserves_a_failing_exit_code():
     assert proc.returncode == 2
     assert "cannot read" in proc.stderr
     assert proc.stdout == ""
+
+
+# --------------------------------------------------------------------------
+# The carrier chain — steps fed by value edges rather than a file on disk
+#
+# These are the tests that make the Play portable. Every stage takes the
+# previous stage's output as one argv scalar, fills its own columns, and passes
+# the rest through, so `compute_verdict` no longer reads a records file that
+# only exists on the machine the Play was recorded on.
+#
+# The invariant tests below are the ones worth keeping: a stage that did not
+# run must widen REVIEW. It must never produce SAFE or CURRENT.
+# --------------------------------------------------------------------------
+
+def carrier(**over):
+    """A fully-populated carrier row, ACT by default."""
+    row = {"eco": "pypi", "name": "numpy", "current": "1.26", "latest": "2.5.2",
+           "repo": "numpy/numpy", "gap": "major", "outdated": "1", "direct": "1",
+           "files": "14", "site": "tests/mocks.py:13", "checked": "1",
+           "breaking": "1", "markers": "removal"}
+    row.update(over)
+    return FS.join([row["eco"], row["name"], row["current"], row["latest"],
+                    row["repo"], row["gap"], row["outdated"], row["direct"],
+                    row["files"], row["site"], row["checked"], row["breaking"],
+                    row["markers"]])
+
+
+def verdict(*rows):
+    proc = run("compute_verdict.py", "--batch", json.dumps(
+        {"ok": True, "packed": RS.join(rows)}))
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def tiers(out):
+    return {row[2]: row[0] for row in unpack(out["packed"])}
+
+
+def test_short_carrier_rows_are_padded_not_dropped():
+    """Stage 1 emits three columns; downstream must read the rest as unknown."""
+    out = verdict(FS.join(["pypi", "numpy", "1.26"]))
+    assert out["total"] == 1
+    assert tiers(out) == {"numpy": "REVIEW"}
+
+
+def test_batch_accepts_a_whole_payload_or_a_bare_packed_scalar():
+    """The step must not care whether the edge resolves .stdout.text or .packed."""
+    row = carrier()
+    whole = run("compute_verdict.py", "--batch",
+                json.dumps({"ok": True, "packed": row}))
+    bare = run("compute_verdict.py", "--batch", row)
+    assert whole.returncode == bare.returncode == 0
+    assert json.loads(whole.stdout) == json.loads(bare.stdout)
+
+
+def test_malformed_upstream_payload_is_a_hard_fault():
+    """A broken edge must fail closed, not triage zero dependencies."""
+    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed"')
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "will not parse" in proc.stderr
+
+
+@pytest.mark.parametrize("script,args", [
+    ("fetch_registry.py", ["--batch"]),
+    ("fetch_changelog.py", ["--batch"]),
+    ("compute_verdict.py", ["--batch"]),
+])
+def test_batch_without_a_payload_is_a_hard_fault(script, args):
+    proc = run(script, *args)
+    assert proc.returncode == 2
+    assert "usage:" in proc.stderr
+
+
+@pytest.mark.parametrize("script,args", [
+    ("fetch_registry.py", ["--batch", '{"ok": true, "packed": ""}']),
+    ("fetch_changelog.py", ["--batch", '{"ok": true, "packed": ""}']),
+    ("compute_verdict.py", ["--batch", '{"ok": true, "packed": ""}']),
+])
+def test_an_empty_upstream_degrades_rather_than_failing(script, args):
+    """A repository with no dependencies is an expected absence, not an error."""
+    proc = run(script, *args)
+    assert proc.returncode == 0
+    out = json.loads(proc.stdout)
+    assert out["ok"] is True
+    assert "no depend" in out["warning"]
+
+
+# --- the honesty invariant, one stage at a time ---------------------------
+
+def test_a_skipped_registry_stage_reports_review_not_current():
+    """Unknown 'outdated' must not read as 'already current'."""
+    out = verdict(carrier(outdated="", latest="", gap="", checked="", breaking=""))
+    assert tiers(out) == {"numpy": "REVIEW"}
+    assert out["current"] == 0
+    assert "never resolved" in unpack(out["packed"])[0][7]
+
+
+def test_a_skipped_callsites_stage_reports_review_not_safe():
+    """Unknown 'direct' must not read as 'transitive, bump it blind'."""
+    out = verdict(carrier(direct="", files="", site=""))
+    assert tiers(out) == {"numpy": "REVIEW"}
+    assert out["safe"] == 0
+    assert "never scanned" in unpack(out["packed"])[0][7]
+
+
+def test_a_skipped_changelog_stage_reports_review_not_safe():
+    """Unknown 'checked' must not read as 'notes read and clean'."""
+    out = verdict(carrier(checked="", breaking="", markers=""))
+    assert tiers(out) == {"numpy": "REVIEW"}
+    assert out["safe"] == 0
+
+
+def test_unread_notes_keep_their_markers_visible_in_review():
+    """A major bump nobody could verify still says so, without becoming ACT."""
+    out = verdict(carrier(checked="0", breaking="0", markers="major-version-bump"))
+    row = unpack(out["packed"])[0]
+    assert row[0] == "REVIEW"
+    assert "major-version-bump" in row[7]
+
+
+def test_every_unknown_at_once_is_review_never_safe():
+    """The fully degraded run: nothing checked, nothing laundered."""
+    out = verdict(FS.join(["pypi", "numpy", "1.26"]),
+                  FS.join(["pypi", "scipy", "1.11"]))
+    assert out["review"] == 2
+    assert out["safe"] == out["current"] == out["act"] == 0
+
+
+def test_a_clean_full_row_is_still_allowed_to_be_safe():
+    """The invariant must not make SAFE unreachable — only unearned."""
+    out = verdict(carrier(breaking="0", markers=""))
+    assert tiers(out) == {"numpy": "SAFE"}
+
+
+# --- the stages fill their own columns ------------------------------------
+
+def test_registry_batch_fills_its_columns_and_keeps_the_others_blank():
+    """Uses an unsupported ecosystem so the plumbing is tested without a network."""
+    proc = run("fetch_registry.py", "--batch",
+               json.dumps({"ok": True, "packed": FS.join(["cpan", "Moose", "2.0"])}))
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["count"] == 1 and out["unresolved"] == 1
+    assert "unsupported ecosystem" in out["warning"]
+    row = unpack(out["packed"])[0]
+    assert row[:2] == ["cpan", "Moose"]
+    assert row[6] == "0"                       # outdated: known false, not blank
+    assert row[7] == row[10] == row[11] == ""  # downstream columns untouched
+
+
+def test_callsites_batch_fills_direct_files_and_first_site(tmp_path):
+    (tmp_path / "app.py").write_text("import numpy as np\n")
+    upstream = json.dumps({"ok": True, "packed": RS.join([
+        carrier(direct="", files="", site=""),
+        carrier(name="scipy", direct="", files="", site=""),
+    ])})
+    proc = run("find_callsites.py", "--batch", str(tmp_path), upstream)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["direct"] == 1
+    numpy_row, scipy_row = unpack(out["packed"])
+    assert numpy_row[7] == "1" and numpy_row[8] == "1"
+    assert numpy_row[9] == "app.py:1"
+    assert scipy_row[7] == "0" and scipy_row[9] == ""
+    assert numpy_row[3] == "2.5.2"             # upstream columns passed through
+
+
+def test_changelog_batch_reads_notes_and_skips_current_packages(github_stub):
+    github_stub.reply([_release("v2.0.0", "- Removed the old API.")])
+    upstream = json.dumps({"ok": True, "packed": RS.join([
+        carrier(current="1.0", latest="2.0.0", checked="", breaking="", markers=""),
+        carrier(name="scipy", outdated="0", checked="", breaking="", markers=""),
+    ])})
+    proc = run("fetch_changelog.py", "--batch", upstream, env=github_stub.env)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["count"] == 2 and out["considered"] == 1
+    numpy_row, scipy_row = unpack(out["packed"])
+    assert numpy_row[10] == "1" and numpy_row[11] == "1"
+    assert "removal" in numpy_row[12]
+    assert scipy_row[10] == ""                 # already current; nothing to read
+
+
+def test_rate_limited_changelog_batch_produces_review_never_safe(github_stub):
+    """The degraded run the whole design exists to get right."""
+    github_stub.reply({"message": "rate limited"}, status=403,
+                      headers={"X-RateLimit-Remaining": "0"})
+    upstream = json.dumps({"ok": True, "packed": RS.join([
+        carrier(gap="minor", latest="1.18.1", checked="", breaking="", markers=""),
+    ])})
+    proc = run("fetch_changelog.py", "--batch", upstream, env=github_stub.env)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["rate_limited"] == 1
+    assert "GITHUB_TOKEN" in out["warning"]
+
+    final = verdict(*[RS.join(unpack(out["packed"])[0]).replace(RS, FS)])
+    assert tiers(final) == {"numpy": "REVIEW"}
+    assert final["safe"] == 0
+
+
+def test_the_chain_runs_with_nothing_on_disk_but_the_project(tmp_path, github_stub):
+    """End to end, no records file: exactly what a stranger's machine has."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["numpy==1.26"]\n')
+    (tmp_path / "app.py").write_text("import numpy as np\n")
+    github_stub.reply([_release("v2.0.0", "- Removed the old API.")])
+
+    step1 = run("parse_manifest.py", str(tmp_path))
+    assert step1.returncode == 0, step1.stderr
+    # Stage 2 needs a live registry, so the version facts are supplied here the
+    # way it would supply them; every other stage is the real thing.
+    resolved = json.dumps({"ok": True, "packed": FS.join(
+        ["pypi", "numpy", "1.26", "2.0.0", "numpy/numpy", "major", "1"])})
+
+    step3 = run("find_callsites.py", "--batch", str(tmp_path), resolved)
+    assert step3.returncode == 0, step3.stderr
+    step4 = run("fetch_changelog.py", "--batch", step3.stdout, env=github_stub.env)
+    assert step4.returncode == 0, step4.stderr
+    step5 = run("compute_verdict.py", "--batch", step4.stdout)
+    assert step5.returncode == 0, step5.stderr
+
+    out = json.loads(step5.stdout)
+    assert out["act"] == 1
+    assert "breaking changes in code you actually call" in out["headline"]
+    assert unpack(out["packed"])[0][8] == "app.py:1"
+
+
+def test_delimiters_survive_the_inlined_transport(tmp_path):
+    """Carrier rows travel through argv; FS and RS must arrive intact."""
+    payload = json.dumps({"ok": True, "packed": RS.join([carrier(), carrier(name="scipy")])})
+    prefix = inline_steps.argv_prefix(os.path.join(STEPS, "compute_verdict.py"))
+    inlined = subprocess.run([*prefix, "--batch", payload],
+                             capture_output=True, text=True)
+    direct = run("compute_verdict.py", "--batch", payload)
+    assert inlined.returncode == direct.returncode == 0, inlined.stderr
+    assert json.loads(inlined.stdout) == json.loads(direct.stdout)
+    assert json.loads(inlined.stdout)["act"] == 2

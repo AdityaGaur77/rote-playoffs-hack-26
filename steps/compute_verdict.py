@@ -33,9 +33,77 @@ def die(msg):
     raise SystemExit(2)
 
 
+# ---------------------------------------------------------------------------
+# Carrier record — how dependency facts cross a step boundary.
+#
+# Each stage fills its own columns and passes the rest through, so the whole
+# triage runs as a linear DAG wired by value edges. No stage needs a file on
+# disk, and no stage needs to know how many dependencies there are.
+#
+#   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+#   1 name        4 repo     7 direct     10 checked
+#   2 current     5 gap      8 files      11 breaking
+#
+# Booleans are "1" / "0" when known and "" when the stage that fills them has
+# not run. That third state is load-bearing: an unfilled column must read as
+# UNKNOWN downstream, never as a clean bill of health.
+# ---------------------------------------------------------------------------
+COLS = 13
+
+
+def scrub(value):
+    """Field text can never contain the delimiters that frame it."""
+    return str(value).replace(FS, " ").replace(RS, " ")
+
+
+def unpack(packed):
+    """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+    rows = []
+    for chunk in (packed or "").split(RS):
+        if chunk:
+            rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+    return rows
+
+
+def repack(rows):
+    return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+
+
+def upstream_packed(arg):
+    """The previous step's output, however the value edge chose to deliver it.
+
+    A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+    accepted, so the step does not depend on whether the edge resolves
+    `.stdout.text` or `.stdout.json.packed`.
+    """
+    text = (arg or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as exc:
+        die(f"upstream payload will not parse as JSON: {exc}")
+    if not isinstance(doc, dict):
+        die("upstream payload is not a JSON object")
+    return doc.get("packed", "")
+
+
+def emit(payload):
+    sys.stdout.write(json.dumps(payload) + "\n")
+    raise SystemExit(0)
+
+
 def classify(rec):
+    # An unfilled fact is UNKNOWN, never a clean bill of health. A stage that
+    # did not run must widen REVIEW; it must never narrow it, because the whole
+    # value of this Play is that "safe to bump" means somebody checked.
+    if rec.get("outdated_unknown"):
+        return "REVIEW", "version never resolved; status unknown"
     if not rec.get("outdated"):
         return "CURRENT", "already current"
+    if rec.get("direct_unknown"):
+        return "REVIEW", "call sites never scanned; status unknown"
+
     direct = bool(rec.get("direct"))
     checked = bool(rec.get("checked"))
     breaking = bool(rec.get("breaking"))
@@ -45,25 +113,61 @@ def classify(rec):
     if breaking:
         return "ACT", rec.get("markers") or "breaking changes in range"
     if not checked:
-        return "REVIEW", rec.get("warning") or "release notes unavailable; status unknown"
+        why = rec.get("warning") or "release notes unavailable; status unknown"
+        # Markers found without reading the notes -- a major version bump -- are
+        # still evidence. Surfacing them keeps a degraded row informative
+        # without promoting it out of REVIEW.
+        if rec.get("markers"):
+            why = f"{why} ({rec['markers']})"
+        return "REVIEW", why
     return "SAFE", "notes read, no breaking markers"
 
 
-def open_input():
-    """The records file named on argv, or stdin when no path is given."""
-    if len(sys.argv) < 2:
-        return sys.stdin, False
-    try:
-        return open(sys.argv[1], encoding="utf-8"), True
-    except OSError as exc:
-        # A named file that cannot be read is a broken invocation, not an
-        # expected absence: failing closed beats triaging zero dependencies
-        # and reporting "nothing to triage".
-        die(f"cannot read {sys.argv[1]}: {exc}")
+def record_from_row(row):
+    """A carrier row as the record classify() expects, unknowns preserved."""
+    return {
+        "ecosystem": row[0],
+        "name": row[1],
+        "current": row[2],
+        "latest": row[3],
+        "gap": row[5] or "unknown",
+        "outdated": row[6] == "1",
+        "outdated_unknown": row[6] == "",
+        "direct": row[7] == "1",
+        "direct_unknown": row[7] == "",
+        "files": int(row[8]) if row[8].isdigit() else 0,
+        "first_site": row[9],
+        "checked": row[10] == "1",
+        "breaking": row[11] == "1",
+        "markers": row[12],
+    }
 
 
-def main():
-    stream, opened = open_input()
+def read_records():
+    """Records from --batch, from a named file, or from stdin.
+
+    --batch is the form the Play uses: the upstream step's output arrives whole
+    as one argv scalar, so nothing has to exist on disk and the chain works on a
+    machine that has never seen this repository.
+    """
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--batch":
+        if len(argv) < 2:
+            die("usage: compute_verdict.py --batch <upstream payload>")
+        return [record_from_row(row) for row in unpack(upstream_packed(argv[1]))]
+
+    stream, opened = None, False
+    if argv:
+        try:
+            stream, opened = open(argv[0], encoding="utf-8"), True
+        except OSError as exc:
+            # A named file that cannot be read is a broken invocation, not an
+            # expected absence: failing closed beats triaging zero dependencies
+            # and reporting "nothing to triage".
+            die(f"cannot read {argv[0]}: {exc}")
+    else:
+        stream = sys.stdin
+
     records = []
     for line_no, line in enumerate(stream, 1):
         line = line.strip()
@@ -75,14 +179,18 @@ def main():
             die(f"line {line_no} is not valid JSON: {exc}")
     if opened:
         stream.close()
+    return records
+
+
+def main():
+    records = read_records()
 
     if not records:
-        sys.stdout.write(json.dumps({
+        emit({
             "ok": True, "warning": "no dependency records on input",
             "total": 0, "act": 0, "review": 0, "safe": 0, "current": 0,
             "headline": "nothing to triage", "packed": "",
-        }) + "\n")
-        raise SystemExit(0)
+        })
 
     rows = []
     for rec in records:
@@ -120,7 +228,7 @@ def main():
         r["gap"], str(r["files"]), r["why"], r["site"],
     ]) for r in rows)
 
-    sys.stdout.write(json.dumps({
+    emit({
         "ok": True,
         "total": len(rows),
         "act": counts["ACT"], "review": counts["REVIEW"],
@@ -128,7 +236,7 @@ def main():
         "outdated": outdated,
         "headline": headline,
         "packed": packed,
-    }) + "\n")
+    })
 
 
 if __name__ == "__main__":

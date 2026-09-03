@@ -103,20 +103,74 @@ def is_commented(line):
     return line.lstrip().startswith(COMMENT_PREFIXES)
 
 
-def main():
-    if len(sys.argv) < 4:
-        die("usage: find_callsites.py <root> <ecosystem> <name>")
-    root, eco, name = sys.argv[1], sys.argv[2], sys.argv[3]
+# ---------------------------------------------------------------------------
+# Carrier record — how dependency facts cross a step boundary.
+#
+# Each stage fills its own columns and passes the rest through, so the whole
+# triage runs as a linear DAG wired by value edges. No stage needs a file on
+# disk, and no stage needs to know how many dependencies there are.
+#
+#   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+#   1 name        4 repo     7 direct     10 checked
+#   2 current     5 gap      8 files      11 breaking
+#
+# Booleans are "1" / "0" when known and "" when the stage that fills them has
+# not run. That third state is load-bearing: an unfilled column must read as
+# UNKNOWN downstream, never as a clean bill of health.
+# ---------------------------------------------------------------------------
+COLS = 13
 
-    if not os.path.isdir(root):
-        die(f"root is not a directory: {root}")
 
+def scrub(value):
+    """Field text can never contain the delimiters that frame it."""
+    return str(value).replace(FS, " ").replace(RS, " ")
+
+
+def unpack(packed):
+    """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+    rows = []
+    for chunk in (packed or "").split(RS):
+        if chunk:
+            rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+    return rows
+
+
+def repack(rows):
+    return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+
+
+def upstream_packed(arg):
+    """The previous step's output, however the value edge chose to deliver it.
+
+    A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+    accepted, so the step does not depend on whether the edge resolves
+    `.stdout.text` or `.stdout.json.packed`.
+    """
+    text = (arg or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as exc:
+        die(f"upstream payload will not parse as JSON: {exc}")
+    if not isinstance(doc, dict):
+        die("upstream payload is not a JSON object")
+    return doc.get("packed", "")
+
+
+def scan(root, eco, name):
+    """Where, if anywhere, this project imports the package.
+
+    "Not found" is a real answer, not an absence, so this never raises; only a
+    bad invocation or an unreadable root is a hard fault, and that is checked
+    once by the caller.
+    """
     exts = EXTS.get(eco)
     base = {"ok": True, "ecosystem": eco, "name": name,
             "direct": False, "hits": 0, "files": 0, "packed": "", "scanned": 0}
     if not exts:
         base["warning"] = f"no source pattern for ecosystem: {eco}"
-        emit(base)
+        return base
 
     aliases = import_aliases(eco, name)
     pats = patterns_for(eco, aliases)
@@ -162,7 +216,57 @@ def main():
                         f"source files — likely transitive")
     if unreadable:
         base["warning"] = f"{unreadable} file(s) could not be read"
-    emit(base)
+    return base
+
+
+def run_batch(root, arg):
+    """Scan the tree once per dependency, filling carrier columns 7-9.
+
+    first_site is the representative call site quoted in the final report; it
+    is the reason a row reads "breaking, and you call it here" rather than
+    "breaking, somewhere".
+    """
+    rows = unpack(upstream_packed(arg))
+    if not rows:
+        emit({"ok": True, "warning": "no dependencies on input", "count": 0,
+              "direct": 0, "scanned": 0, "packed": ""})
+
+    scanned = 0
+    for row in rows:
+        rec = scan(root, row[0], row[1])
+        scanned = max(scanned, rec["scanned"])
+        row[7] = "1" if rec["direct"] else "0"
+        row[8] = str(rec["files"])
+        first = rec["packed"].split(RS)[0] if rec["packed"] else ""
+        if first:
+            parts = first.split(FS)
+            row[9] = f"{parts[0]}:{parts[1]}" if len(parts) > 1 else parts[0]
+
+    emit({
+        "ok": True,
+        "count": len(rows),
+        "direct": sum(1 for row in rows if row[7] == "1"),
+        "scanned": scanned,
+        "packed": repack(rows),
+    })
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+        if len(sys.argv) < 4:
+            die("usage: find_callsites.py --batch <root> <upstream payload>")
+        root = sys.argv[2]
+        if not os.path.isdir(root):
+            die(f"root is not a directory: {root}")
+        run_batch(root, sys.argv[3])
+
+    if len(sys.argv) < 4:
+        die("usage: find_callsites.py <root> <ecosystem> <name>\n"
+            "   or: find_callsites.py --batch <root> <upstream payload>")
+    root, eco, name = sys.argv[1], sys.argv[2], sys.argv[3]
+    if not os.path.isdir(root):
+        die(f"root is not a directory: {root}")
+    emit(scan(root, eco, name))
 
 
 if __name__ == "__main__":
