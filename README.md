@@ -124,9 +124,11 @@ range selection, 404, rate limit, 500 — is covered without a network or a rate
 
 ## Publishing: the scripts travel with the Play
 
-A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine.
-`tools/inline_steps.py` emits a self-contained `python3 -c` argv prefix per step, so the exported
-`main.ts` carries the scripts instead of pointing at them:
+A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine, so
+`main.ts` has to carry the scripts rather than point at them. `tools/build_play.py` embeds them —
+see below.
+
+`tools/inline_steps.py` is the base64 route that fallback mode uses:
 
 ```bash
 python3 tools/inline_steps.py --json
@@ -135,7 +137,8 @@ python3 tools/inline_steps.py --json
 Base64 keeps the encoded body free of quotes and shell metacharacters, and arguments still land in
 `sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
 assert the inlined and file forms produce identical output and identical exit codes, including the
-fail-closed path.
+fail-closed path, because if fail-closed were lost in transport an unreadable input would become a
+silent all-clear.
 
 ## The Play itself
 

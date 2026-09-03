@@ -174,10 +174,9 @@ steps/fetch_registry.py    <ecosystem> <name> <current>       -> latest, repo, g
 steps/find_callsites.py    <root> <ecosystem> <name>          -> direct, hits, files, sites
 steps/fetch_changelog.py   <owner/repo> <current> <latest>    -> checked, breaking, markers
 steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if no path)
-tools/inline_steps.py      [--json]                           -> portable argv prefixes
-tools/build_play.py        [--check]                          -> generates play/main.ts
+tools/build_play.py        [--check] [--base64]              -> generates play/main.ts
+tools/inline_steps.py      [--json]                           -> base64 argv prefixes
 play/main.ts               generated, 64 KB                   -> the Play
-tools/build_play.py        [--check] [--base64]                 -> generates it
 play/deps.toml                                                -> declares python3
 tests/test_steps.py                                           -> 124 tests
 smoke_test.sh
@@ -293,7 +292,7 @@ now closed in code; one is a question only the local rote install can answer.
 | 1 | `root` declared but never used; steps hardcoded `/home/adity/next-step-26` | **closed** — `root` is threaded into the two steps that take a path |
 | 2 | `/home/adity/records.jsonl` produced by no step | **closed** — see below |
 | 3 | Steps named `python3`, `python3_2` … `python3_9` | **closed** — `find_dependencies`, `resolve_versions`, `locate_callsites`, `read_changelogs`, `rank_verdict` |
-| 4 | Absolute script paths | **closed** — `tools/inline_steps.py` base64-inlines each script |
+| 4 | Absolute script paths | **closed** — the scripts are embedded in the frontmatter as source |
 | 5 | `description: ""` | **closed** — written, and asserted non-empty by a test |
 | 6 | Junk steps `@7`, `@9`, `@10` came through | **closed** — the Play is generated from a declared graph, not re-exported from the workspace |
 
