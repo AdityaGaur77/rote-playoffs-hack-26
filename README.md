@@ -110,7 +110,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-122 tests — 118 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
+129 tests — 125 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 
@@ -125,20 +125,22 @@ range selection, 404, rate limit, 500 — is covered without a network or a rate
 ## Publishing: the scripts travel with the Play
 
 A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine, so
-`main.ts` has to carry the scripts rather than point at them. `tools/build_play.py` embeds them —
-see below.
+the Play has to carry the scripts rather than point at them. They are **published under
+`play/resources/` and named in argv by a `@resource{...}` token** — not embedded in argv, which
+rote rejects:
 
-`tools/inline_steps.py` is the base64 route that fallback mode uses:
-
-```bash
-python3 tools/inline_steps.py --json
+```
+STEP_INLINE_CODE_PAYLOAD: argv[2] contains a line break and has 5343 characters,
+above the 256-character inline limit. Keep `process.exec` argv as command structure.
 ```
 
-Base64 keeps the encoded body free of quotes and shell metacharacters, and arguments still land in
-`sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
-assert the inlined and file forms produce identical output and identical exit codes, including the
-fail-closed path, because if fail-closed were lost in transport an unreadable input would become a
-silent all-clear.
+Two earlier designs — base64, then literal source in the frontmatter — passed every test in this
+repo and were rejected by the linter for exactly that. `main.ts` is 7 KB now instead of 64 KB, and
+the steps are ordinary Python files anyone can read before running them.
+
+Tests assert each published resource is byte-identical to the script this suite exercises, that
+the published copy still fails closed on an unreadable input, and that no argv element carries a
+line break or exceeds 256 characters.
 
 ## The Play itself
 
@@ -151,20 +153,19 @@ python3 tools/build_play.py --check    # fail if a step changed since it was gen
 ```
 
 The `--check` form runs in the test suite, so a stale Play is a test failure rather than a
-published surprise. `play/deps.toml` declares `python3` and nothing else.
+published surprise.
 
-The steps travel as **literal Python in a YAML block scalar**, not base64 — the same way
-`modiqo/dns-propagation-check` embeds its own. It costs about the same bytes and buys the thing
-base64 destroys: someone inspecting the Play before running it can read exactly what it will do.
-`--base64` keeps the opaque form available as a fallback; both modes are tested.
+It writes `play/main.ts` and `play/resources/`, and `--check` fails if either has drifted from
+`steps/`. The generator verifies itself: it parses the frontmatter with PyYAML and asserts no argv
+element breaks the inline limit — the rule that caught the previous design.
 
-The generator verifies itself. It strips the comment prefix, parses the frontmatter with PyYAML,
-and asserts every embedded script round-trips to the exact bytes in `steps/`. A Play that fails
-that is never written.
+rote's own syntax, confirmed against `modiqo/dns-propagation-check` and against the linter: a
+parameter is a bare `$root`, a value edge is `@step{$.stdout.text | fromjson | .packed}`, a
+published file is `@resource{name.py}`, and the body reads step outputs through the presentation
+SDK (`loadPresentationContext`, `ctx.step(stepName(...))`, `out.human()`).
 
-rote's own syntax, confirmed against that reference Play: a parameter is a bare `$root`, a value
-edge is `@step{$.stdout.text | fromjson | .packed}`, and the body reads step outputs through the
-presentation SDK (`loadPresentationContext`, `ctx.step(stepName(...))`, `out.human()`).
+`play/deps.toml` declares `python3` and nothing else, in the schema rote accepts —
+`schema_version` plus `[[tools]]`, not a `[deps]` table.
 
 ## Optional GITHUB_TOKEN
 

@@ -1,33 +1,44 @@
 #!/usr/bin/env python3
 """Generate the publishable Play from the step scripts.
 
-    python3 tools/build_play.py              # write play/main.ts
-    python3 tools/build_play.py --check      # fail if it is out of date
-    python3 tools/build_play.py --base64     # inline as base64 instead of source
+    python3 tools/build_play.py              # write play/main.ts + play/resources/
+    python3 tools/build_play.py --check      # fail if either is out of date
 
 Re-run after ANY change to steps/. The --check form runs in the test suite,
 which is what stops a fix from being tested locally and never reaching what was
 published.
 
-Every step script is embedded in the frontmatter as literal Python, the way
-modiqo/dns-propagation-check embeds its own. That costs about the same bytes as
-base64 and buys the thing base64 destroys: someone inspecting the Play before
-running it can read exactly what it will do. `--base64` keeps the opaque form
-available in case a parser objects to something in the source.
+The step scripts do NOT travel inside argv. rote caps an inline argv element at
+256 characters and rejects one containing a line break:
 
-The generator verifies its own output: it strips the comment prefix, parses the
-frontmatter as YAML, and asserts every embedded script round-trips to the exact
-bytes on disk. A Play that does not survive that is not written.
+    STEP_INLINE_CODE_PAYLOAD: argv[2] contains a line break and has 5343
+    characters, above the 256-character inline limit. Keep `process.exec` argv
+    as command structure: move static, non-secret, redistributable code under
+    `resources/` and invoke it with a literal `@resource{...}` token.
+
+So each script is published as a file under `play/resources/` and named in argv
+by a resource token. That is better than either thing tried before it -- base64,
+then literal source in the frontmatter -- because argv stays command structure
+and someone inspecting the Play reads the steps as ordinary Python files.
+
+The generator verifies its own output: it parses the frontmatter as YAML and
+asserts no argv element breaks the inline limit, which is the rule that caught
+the previous design.
 """
-import base64
 import json
 import os
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 STEPS = os.path.join(ROOT, "steps")
-OUT = os.path.join(ROOT, "play", "main.ts")
+PLAY = os.path.join(ROOT, "play")
+OUT = os.path.join(PLAY, "main.ts")
+RESOURCES = os.path.join(PLAY, "resources")
+
+# rote's inline-argv limit, from the lint rule that rejected the previous design.
+ARGV_LIMIT = 256
 
 NAME = "upgrade-impact-triage"
 VERSION = "0.1.0"
@@ -78,13 +89,12 @@ STAGE_LABELS = {
     "rank_verdict": "verdict join",
 }
 
-# rote's own syntax, as used by modiqo/dns-propagation-check v1.1.0:
-#   a parameter is a bare $name
-#   a value edge is @step{<jq over the step outcome>}
+# rote's own syntax, as used by modiqo/dns-propagation-check v1.1.0 and as named
+# by the linter: a parameter is a bare $name, a value edge is @step{<jq>}, and a
+# published file is @resource{<name>}.
 PARAM = "${name}"
 EDGE = "@{step}{{$.stdout.text | fromjson | .packed}}"
-
-BOOTSTRAP = "import base64;exec(base64.b64decode('{}').decode())"
+RESOURCE = "@resource{{{name}}}"
 
 
 def source_of(script):
@@ -92,43 +102,19 @@ def source_of(script):
         return handle.read()
 
 
-def program(script, use_base64):
-    if use_base64:
-        blob = base64.b64encode(source_of(script).encode("utf-8")).decode("ascii")
-        return BOOTSTRAP.format(blob)
-    return source_of(script)
-
-
-def tail_args(spec, parents):
-    args = []
+def argv_for(script, spec, parents):
+    argv = ["python3", RESOURCE.format(name=f"{script}.py")]
     for token in spec:
         if token == "root":
-            args.append(PARAM.format(name="root"))
+            argv.append(PARAM.format(name="root"))
         elif token == "edge":
-            args.append(EDGE.format(step=parents[0]))
+            argv.append(EDGE.format(step=parents[0]))
         else:
-            args.append(token)
-    return args
+            argv.append(token)
+    return argv
 
 
-def block_scalar(text, indent):
-    """A literal YAML block scalar with an explicit indentation indicator.
-
-    The indicator is what makes this safe: without it a first line that begins
-    with a space would set the block's indentation implicitly and silently eat
-    it. The leading blank line is deliberate and matches the reference Play.
-    """
-    pad = " " * indent
-    lines = [f"{pad}- |2", ""]
-    body = " " * (indent + 2)
-    for line in text.split("\n"):
-        lines.append(f"{body}{line}" if line else "")
-    while lines and lines[-1] == "":
-        lines.pop()
-    return lines
-
-
-def frontmatter(use_base64):
+def frontmatter():
     lines = [
         "Upgrade Impact Triage",
         "",
@@ -185,10 +171,7 @@ def frontmatter(use_base64):
             lines.append("    depends_on:")
             lines += [f"    - {parent}" for parent in parents]
         lines.append("    argv:")
-        lines.append("    - python3")
-        lines.append("    - -c")
-        lines += block_scalar(program(script, use_base64), 4)
-        lines += [f"    - {json.dumps(arg)}" for arg in tail_args(spec, parents)]
+        lines += [f"    - {json.dumps(arg)}" for arg in argv_for(script, spec, parents)]
     lines.append("---")
     return lines
 
@@ -300,27 +283,27 @@ out.result({{ run_id: ctx.run.run_id, stages: ledger, ...verdict }});
 '''
 
 
-def build(use_base64=False):
-    block = frontmatter(use_base64)
-    rendered = "\n".join(f" * {line}".rstrip() for line in block)
+def build():
+    rendered = "\n".join(f" * {line}".rstrip() for line in frontmatter())
     # A literal */ closes the comment early and the rest of the Play becomes
-    # syntax. base64 cannot produce one; Python source can.
+    # syntax.
     if "*/" in rendered:
         raise SystemExit("build_play: frontmatter contains */, which would close "
                          "the comment block early")
     return ("#!/usr/bin/env -S rote play run\n/**\n" + rendered + "\n */\n" + body())
 
 
-def verify(text, use_base64):
-    """Parse the frontmatter back and prove every script survived the transport.
+def verify(text):
+    """Parse the frontmatter back and prove the Play is publishable.
 
     A generator that emits YAML nobody parsed is a generator that ships broken
-    Plays. This is the check that makes embedding literal source safe.
+    Plays. The argv-limit assertion is here because the previous design passed
+    every test in this repo and was rejected by rote's linter.
     """
     try:
         import yaml
     except ImportError:
-        print("build_play: PyYAML not installed; skipping round-trip verification",
+        print("build_play: PyYAML not installed; skipping frontmatter verification",
               file=sys.stderr)
         return
 
@@ -337,21 +320,51 @@ def verify(text, use_base64):
 
     for step, script, _timeout, spec, parents in GRAPH:
         argv = doc["steps"][step]["argv"]
-        assert argv[0] == "python3" and argv[1] == "-c", f"{step}: argv shape"
-        embedded = argv[2].lstrip("\n")
-        expected = program(script, use_base64).rstrip("\n")
-        assert embedded.rstrip("\n") == expected, (
-            f"{step}: embedded program does not match steps/{script}.py")
-        assert argv[3:] == tail_args(spec, parents), f"{step}: trailing args"
+        assert argv == argv_for(script, spec, parents), f"{step}: argv"
         assert doc["steps"][step].get("depends_on", []) == parents, f"{step}: edges"
-    print(f"verified: {len(GRAPH)} steps parse and round-trip to their source")
+        for i, arg in enumerate(argv):
+            assert "\n" not in arg, f"{step}: argv[{i}] contains a line break"
+            assert len(arg) <= ARGV_LIMIT, (
+                f"{step}: argv[{i}] is {len(arg)} chars, over the "
+                f"{ARGV_LIMIT}-character inline limit")
+    print(f"verified: {len(GRAPH)} steps parse, every argv element within the "
+          f"{ARGV_LIMIT}-character limit")
+
+
+def write_resources():
+    """Publish each step as a file the Play can name, and prune stale ones."""
+    os.makedirs(RESOURCES, exist_ok=True)
+    wanted = {f"{script}.py" for _step, script, *_rest in GRAPH}
+    for name in sorted(os.listdir(RESOURCES)):
+        if name not in wanted:
+            os.remove(os.path.join(RESOURCES, name))
+    for _step, script, *_rest in GRAPH:
+        shutil.copyfile(os.path.join(STEPS, f"{script}.py"),
+                        os.path.join(RESOURCES, f"{script}.py"))
+    return sorted(wanted)
+
+
+def resources_current():
+    if not os.path.isdir(RESOURCES):
+        return False, "play/resources/ does not exist"
+    wanted = {f"{script}.py" for _step, script, *_rest in GRAPH}
+    for _step, script, *_rest in GRAPH:
+        published = os.path.join(RESOURCES, f"{script}.py")
+        if not os.path.exists(published):
+            return False, f"play/resources/{script}.py is missing"
+        with open(published, encoding="utf-8") as handle:
+            if handle.read() != source_of(script):
+                return False, f"play/resources/{script}.py differs from steps/{script}.py"
+    extra = sorted(set(os.listdir(RESOURCES)) - wanted)
+    if extra:
+        return False, f"play/resources/ carries files no step names: {extra}"
+    return True, ""
 
 
 def main():
     args = sys.argv[1:]
-    use_base64 = "--base64" in args
-    text = build(use_base64)
-    verify(text, use_base64)
+    text = build()
+    verify(text)
 
     if "--check" in args:
         try:
@@ -361,22 +374,24 @@ def main():
             print(f"build_play: {OUT} does not exist; run without --check",
                   file=sys.stderr)
             raise SystemExit(2)
-        # Either inlining mode is a legitimate way to have built the file, so
-        # accept whichever one reproduces it. Otherwise switching to --base64
-        # would leave the staleness check permanently red.
-        if current != text and current != build(not use_base64):
-            print("build_play: play/main.ts is stale — a step changed since it was "
-                  "generated. Re-run: python3 tools/build_play.py", file=sys.stderr)
+        if current != text:
+            print("build_play: play/main.ts is stale — re-run: "
+                  "python3 tools/build_play.py", file=sys.stderr)
             raise SystemExit(2)
-        print("play/main.ts is up to date")
+        ok, why = resources_current()
+        if not ok:
+            print(f"build_play: {why} — re-run: python3 tools/build_play.py",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        print("play/main.ts and play/resources/ are up to date")
         return
 
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    os.makedirs(PLAY, exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as handle:
         handle.write(text)
-    form = "base64" if use_base64 else "literal source"
-    print(f"wrote {os.path.relpath(OUT, ROOT)}  ({len(text):,} bytes, "
-          f"{len(GRAPH)} steps, {form})")
+    published = write_resources()
+    print(f"wrote {os.path.relpath(OUT, ROOT)}  ({len(text):,} bytes, {len(GRAPH)} steps)")
+    print(f"wrote {os.path.relpath(RESOURCES, ROOT)}/  ({len(published)} scripts)")
 
 
 if __name__ == "__main__":

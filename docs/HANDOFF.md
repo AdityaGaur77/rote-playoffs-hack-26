@@ -175,18 +175,18 @@ steps/fetch_registry.py    <ecosystem> <name> <current>       -> latest, repo, g
 steps/find_callsites.py    <root> <ecosystem> <name>          -> direct, hits, files, sites
 steps/fetch_changelog.py   <owner/repo> <current> <latest>    -> checked, breaking, markers
 steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if no path)
-tools/build_play.py        [--check] [--base64]              -> generates play/main.ts
-tools/inline_steps.py      [--json]                           -> base64 argv prefixes
-play/main.ts               generated, 64 KB                   -> the Play
+tools/build_play.py        [--check]                          -> generates the Play
+play/main.ts               generated, 7 KB                    -> the Play
+play/resources/*.py        published copies of steps/         -> named by @resource{}
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 124 tests
+tests/test_steps.py                                           -> 129 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **120 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **125 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -359,25 +359,76 @@ because it is known to run. Note the path: installed Plays live under
 |---|---|---|
 | Parameter | `$root` | a bare `$name`, **not** `${name}` |
 | Value edge | `@step{$.stdout.text \| fromjson \| .packed}` | `@step{...}` wrapping a jq expression over the step outcome |
+| Resource | `@resource{parse_manifest.py}` | a file published under `resources/` |
 | Body | `loadPresentationContext()` + `ctx.step(stepName("..."))` | see below |
 
 Two of the three earlier guesses were wrong, which is why they were isolated in
 one file rather than spread through a 64 KB document.
 
-### Steps carry literal Python, not base64
+### Steps are published files, not an argv payload
 
-The reference Play embeds its step scripts as readable source in a YAML block
-scalar (`- |2`, then a blank line, then the body indented two past the sequence
-item). `build_play.py` now does the same. It costs about the same bytes as
-base64 and buys the thing base64 destroys: a judge inspecting the Play before
-running it can read exactly what it will do.
+`rote play lint` rejected both earlier designs:
 
-`--base64` still produces the opaque form if a parser ever objects to something
-in the source. Both modes are tested and `--check` accepts either.
+```
+STEP_INLINE_CODE_PAYLOAD: argv[2] contains a line break and has 5343
+characters, above the 256-character inline limit. Keep `process.exec` argv as
+command structure: move static, non-secret, redistributable code under
+`resources/` and invoke it with a literal `@resource{...}` token.
+```
 
-The generator verifies itself: it strips the ` * ` prefix, parses the
-frontmatter with PyYAML, and asserts every embedded script round-trips to the
-exact bytes in `steps/`. A Play that fails that is not written.
+Base64 and literal source both smuggle a program into argv, and argv is command
+structure. The mechanism rote wants is a published file:
+
+```
+play/
+  main.ts            7 KB, not 64 KB
+  deps.toml
+  resources/
+    parse_manifest.py  fetch_registry.py  find_callsites.py
+    fetch_changelog.py compute_verdict.py
+```
+
+```yaml
+argv:
+- "python3"
+- "@resource{parse_manifest.py}"
+- "$root"
+```
+
+This is better than either thing it replaced. argv reads as a command, and the
+steps are ordinary Python files a judge can read before running them — which is
+most of what "honest description" means when the thing described is a program.
+
+`tools/inline_steps.py` is deleted. No inlining mode can pass a 256-character
+limit, so keeping it would only have suggested a wrong answer.
+
+`build_play.py` writes `main.ts` and `resources/`, and `--check` fails if either
+has drifted from `steps/`. Three tests assert each published resource is
+byte-identical to the script the suite exercises, that the published copy still
+fails closed on an unreadable input, and that no argv element carries a line
+break or exceeds 256 characters — the rule that caught two designs is now a
+test rather than a lesson.
+
+### deps.toml has a schema, and it is not `[deps]`
+
+```
+unknown field `deps`, expected one of `schema_version`, `tools`, `files`, `readiness`
+```
+
+The shape lint printed:
+
+```toml
+schema_version = 1
+
+[[tools]]
+id = "python3"
+command = "python3"
+required = true
+version_requirement = ">=3.8"
+```
+
+`GITHUB_TOKEN` stays undeclared on purpose — it is optional, and leaving it out
+is what keeps `rote play inspect` reporting *Authentication: none*.
 
 ### The body is the presentation SDK, not process.stdout.write
 
@@ -434,7 +485,7 @@ TypeScript in the Play is two lines.
    by name, until the stale `local-process` export is out of `~/.rote/flows/` — see section 10.
    ```bash
    mkdir -p ~/.rote/flows/upgrade-impact-triage
-   cp play/main.ts play/deps.toml ~/.rote/flows/upgrade-impact-triage/
+   cp -r play/main.ts play/deps.toml play/resources ~/.rote/flows/upgrade-impact-triage/
    rote play lint ~/.rote/flows/upgrade-impact-triage/main.ts
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts root=/home/adity/next-step-26
    ```

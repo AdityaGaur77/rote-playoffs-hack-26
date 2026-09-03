@@ -22,12 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(os.path.dirname(HERE), "steps")
 sys.path.insert(0, STEPS)
 
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-
 import compute_verdict          # noqa: E402
 import fetch_changelog          # noqa: E402
 import fetch_registry           # noqa: E402
-import inline_steps             # noqa: E402
 import parse_manifest           # noqa: E402
 
 FS = chr(31)
@@ -623,54 +620,61 @@ def test_vendor_directories_are_skipped(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# tools/inline_steps — the published Play must not point at one laptop
+# play/resources — the scripts the published Play actually runs
+#
+# rote caps an inline argv element at 256 characters and rejects one containing
+# a line break, so the steps cannot travel inside argv at all. They are
+# published as files and named by a @resource{...} token. These tests check the
+# published copies are the ones this suite exercised.
 # --------------------------------------------------------------------------
 
-def test_every_step_script_is_inlined():
-    table = dict(inline_steps.steps())
-    assert set(table) == {"compute_verdict", "fetch_changelog", "fetch_registry",
-                          "find_callsites", "parse_manifest"}
-    for prefix in table.values():
-        assert prefix[0] == "python3" and prefix[1] == "-c"
+RESOURCES = os.path.join(os.path.dirname(HERE), "play", "resources")
 
 
-def test_inlined_form_carries_no_local_path():
-    """The whole point: nothing in the argv may reference this machine."""
-    for name, prefix in inline_steps.steps():
-        joined = " ".join(prefix)
-        assert STEPS not in joined
-        assert ".py" not in prefix[2], f"{name} still names a file"
+def test_every_step_script_is_published_as_a_resource():
+    published = sorted(n for n in os.listdir(RESOURCES) if n.endswith(".py"))
+    assert published == ["compute_verdict.py", "fetch_changelog.py",
+                         "fetch_registry.py", "find_callsites.py",
+                         "parse_manifest.py"]
 
 
-@pytest.mark.parametrize("step,args", [
-    ("parse_manifest", ["{root}"]),
-    ("find_callsites", ["{root}", "pypi", "numpy"]),
+@pytest.mark.parametrize("script", [
+    "parse_manifest", "fetch_registry", "find_callsites",
+    "fetch_changelog", "compute_verdict",
 ])
-def test_inlined_and_file_forms_agree(step, args, tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\ndependencies = ["numpy==1.26"]\n')
-    (tmp_path / "app.py").write_text("import numpy as np\n")
-    filled = [a.format(root=str(tmp_path)) for a in args]
+def test_published_resource_matches_the_tested_script(script):
+    """A resource that drifts from steps/ is a Play doing something untested."""
+    with open(os.path.join(STEPS, f"{script}.py")) as handle:
+        tested = handle.read()
+    with open(os.path.join(RESOURCES, f"{script}.py")) as handle:
+        published = handle.read()
+    assert published == tested, f"play/resources/{script}.py is stale"
 
-    direct = subprocess.run(
-        [sys.executable, os.path.join(STEPS, f"{step}.py"), *filled],
+
+def test_the_published_resource_runs_and_fails_closed():
+    """Fail-closed has to hold for the copy that ships, or REVIEW becomes SAFE."""
+    proc = subprocess.run(
+        [sys.executable, os.path.join(RESOURCES, "compute_verdict.py"),
+         "/nonexistent/records.jsonl"],
         capture_output=True, text=True)
-    inlined = subprocess.run(
-        [*inline_steps.argv_prefix(os.path.join(STEPS, f"{step}.py")), *filled],
-        capture_output=True, text=True)
-
-    assert inlined.returncode == direct.returncode == 0
-    assert json.loads(inlined.stdout) == json.loads(direct.stdout)
-
-
-def test_inlined_form_preserves_a_failing_exit_code():
-    """Fail-closed has to survive the transport, or REVIEW rows become SAFE."""
-    prefix = inline_steps.argv_prefix(os.path.join(STEPS, "compute_verdict.py"))
-    proc = subprocess.run([*prefix, "/nonexistent/records.jsonl"],
-                          capture_output=True, text=True)
     assert proc.returncode == 2
     assert "cannot read" in proc.stderr
     assert proc.stdout == ""
+
+
+def test_the_published_resource_agrees_with_the_tested_script(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["numpy==1.26"]\n')
+    (tmp_path / "app.py").write_text("import numpy as np\n")
+
+    tested = subprocess.run(
+        [sys.executable, os.path.join(STEPS, "parse_manifest.py"), str(tmp_path)],
+        capture_output=True, text=True)
+    published = subprocess.run(
+        [sys.executable, os.path.join(RESOURCES, "parse_manifest.py"), str(tmp_path)],
+        capture_output=True, text=True)
+    assert published.returncode == tested.returncode == 0
+    assert json.loads(published.stdout) == json.loads(tested.stdout)
 
 
 # --------------------------------------------------------------------------
@@ -900,16 +904,14 @@ def test_the_chain_runs_with_nothing_on_disk_but_the_project(tmp_path, github_st
     assert unpack(out["packed"])[0][8] == "app.py:1"
 
 
-def test_delimiters_survive_the_inlined_transport(tmp_path):
+def test_delimiters_survive_argv(tmp_path):
     """Carrier rows travel through argv; FS and RS must arrive intact."""
     payload = json.dumps({"ok": True, "packed": RS.join([carrier(), carrier(name="scipy")])})
-    prefix = inline_steps.argv_prefix(os.path.join(STEPS, "compute_verdict.py"))
-    inlined = subprocess.run([*prefix, "--batch", payload],
-                             capture_output=True, text=True)
-    direct = run("compute_verdict.py", "--batch", payload)
-    assert inlined.returncode == direct.returncode == 0, inlined.stderr
-    assert json.loads(inlined.stdout) == json.loads(direct.stdout)
-    assert json.loads(inlined.stdout)["act"] == 2
+    proc = run("compute_verdict.py", "--batch", payload)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["act"] == 2
+    assert [row[2] for row in unpack(out["packed"])] == ["numpy", "scipy"]
 
 
 # --- the rendered report --------------------------------------------------
@@ -999,15 +1001,18 @@ def test_changelog_batch_says_why_it_could_not_read(github_stub):
     assert "no GitHub repository known" in out["warning"]
 
 
-def test_the_play_frontmatter_parses_and_wires_the_chain():
-    """The generator claims the YAML is valid; this is the independent check."""
+def _frontmatter(play):
     yaml = pytest.importorskip("yaml")
-    play = _play()
     inner = play.split("/**\n", 1)[1].split("\n */\n", 1)[0]
     stripped = "\n".join(
         line[3:] if line.startswith(" * ") else line[2:] if line.startswith(" *") else line
         for line in inner.split("\n"))
-    doc = yaml.safe_load(stripped.split("---\n", 1)[1].rsplit("---", 1)[0])
+    return yaml.safe_load(stripped.split("---\n", 1)[1].rsplit("---", 1)[0])
+
+
+def test_the_play_frontmatter_parses_and_wires_the_chain():
+    """The generator claims the YAML is valid; this is the independent check."""
+    doc = _frontmatter(_play())
 
     order = ["find_dependencies", "resolve_versions", "locate_callsites",
              "read_changelogs", "rank_verdict"]
@@ -1025,25 +1030,42 @@ def test_the_play_frontmatter_parses_and_wires_the_chain():
     assert "$root" in doc["steps"]["locate_callsites"]["argv"]
 
 
-def test_the_embedded_scripts_are_the_scripts_on_disk():
-    """base64 or source, the Play must carry what the tests exercised."""
-    yaml = pytest.importorskip("yaml")
-    play = _play()
-    inner = play.split("/**\n", 1)[1].split("\n */\n", 1)[0]
-    stripped = "\n".join(
-        line[3:] if line.startswith(" * ") else line[2:] if line.startswith(" *") else line
-        for line in inner.split("\n"))
-    doc = yaml.safe_load(stripped.split("---\n", 1)[1].rsplit("---", 1)[0])
+def test_no_step_smuggles_code_into_argv():
+    """The rule that rejected two earlier designs.
 
+    rote caps an inline argv element at 256 characters and rejects one holding a
+    line break -- argv is command structure, not a payload. Both the base64 and
+    the literal-source designs passed every other test in this file and were
+    rejected by the linter for exactly this.
+    """
+    yaml = pytest.importorskip("yaml")
+    doc = _frontmatter(_play())
+    for step, spec in doc["steps"].items():
+        for i, arg in enumerate(spec["argv"]):
+            assert "\n" not in arg, f"{step}: argv[{i}] contains a line break"
+            assert len(arg) <= 256, (
+                f"{step}: argv[{i}] is {len(arg)} chars, over the 256-character "
+                f"inline limit")
+
+
+def test_each_step_names_its_script_by_resource_token():
+    doc = _frontmatter(_play())
     for step, script in [("find_dependencies", "parse_manifest"),
                          ("resolve_versions", "fetch_registry"),
                          ("locate_callsites", "find_callsites"),
                          ("read_changelogs", "fetch_changelog"),
                          ("rank_verdict", "compute_verdict")]:
-        with open(os.path.join(STEPS, f"{script}.py")) as handle:
-            on_disk = handle.read().rstrip("\n")
-        embedded = doc["steps"][step]["argv"][2].lstrip("\n").rstrip("\n")
-        if embedded.startswith("import base64;exec("):
-            blob = embedded.split("'")[1]
-            embedded = base64.b64decode(blob).decode("utf-8").rstrip("\n")
-        assert embedded == on_disk, f"{step} does not carry steps/{script}.py"
+        argv = doc["steps"][step]["argv"]
+        assert argv[0] == "python3"
+        assert argv[1] == "@resource{%s.py}" % script, step
+
+
+def test_the_deps_manifest_uses_the_schema_rote_accepts():
+    """[deps] was rejected: the top level is schema_version/tools/files/readiness."""
+    tomllib = pytest.importorskip("tomllib")
+    with open(os.path.join(os.path.dirname(HERE), "play", "deps.toml"), "rb") as handle:
+        manifest = tomllib.load(handle)
+    assert set(manifest) <= {"schema_version", "tools", "files", "readiness"}
+    assert manifest["schema_version"] == 1
+    assert [t["command"] for t in manifest["tools"]] == ["python3"]
+    assert all(t["required"] for t in manifest["tools"])
