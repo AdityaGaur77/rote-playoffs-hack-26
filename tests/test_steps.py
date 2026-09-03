@@ -7,6 +7,7 @@ what lands on stderr, and the exit status.
 Network tests are opt-in — run with ROTE_NET_TESTS=1 to exercise the live npm,
 PyPI and crates.io endpoints. Off by default so the suite stays hermetic.
 """
+import base64
 import http.server
 import itertools
 import json
@@ -950,18 +951,25 @@ def test_the_published_play_is_not_stale():
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
-def test_the_play_carries_no_local_path():
-    """Criterion 2: it has to run for someone who is not the author."""
+def _play():
     with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
-        play = handle.read()
-    for local in ("/home/adity", "/home/user", "records.jsonl", "next-step-26"):
+        return handle.read()
+
+
+def test_the_play_carries_no_local_path():
+    """Criterion 2: it has to run for someone who is not the author.
+
+    The scripts are embedded as source, so their own filenames appear in usage
+    strings -- that is fine. What must not appear is a path into a machine.
+    """
+    play = _play()
+    for local in ("/home/adity", "/home/user", "next-step-26", "steps/",
+                  os.path.dirname(HERE)):
         assert local not in play, f"main.ts still references {local}"
-    assert ".py" not in play, "main.ts still points at a script file"
 
 
 def test_the_play_declares_a_real_description_and_one_parameter():
-    with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
-        play = handle.read()
+    play = _play()
     assert 'description: ""' not in play
     assert "- name: root" in play
     assert "*/" not in play.split("---\n */")[0].replace("/**", "", 1)
@@ -969,8 +977,7 @@ def test_the_play_declares_a_real_description_and_one_parameter():
 
 def test_every_step_in_the_play_has_a_readable_name():
     """python3_7 teaches an inspecting judge nothing."""
-    with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
-        play = handle.read()
+    play = _play()
     for name in ("find_dependencies", "resolve_versions", "locate_callsites",
                  "read_changelogs", "rank_verdict"):
         assert f" *   {name}:" in play
@@ -990,3 +997,53 @@ def test_changelog_batch_says_why_it_could_not_read(github_stub):
     assert out["checked"] == 0 and out["unread"] == 2
     assert "HTTP 403" in out["warning"]
     assert "no GitHub repository known" in out["warning"]
+
+
+def test_the_play_frontmatter_parses_and_wires_the_chain():
+    """The generator claims the YAML is valid; this is the independent check."""
+    yaml = pytest.importorskip("yaml")
+    play = _play()
+    inner = play.split("/**\n", 1)[1].split("\n */\n", 1)[0]
+    stripped = "\n".join(
+        line[3:] if line.startswith(" * ") else line[2:] if line.startswith(" *") else line
+        for line in inner.split("\n"))
+    doc = yaml.safe_load(stripped.split("---\n", 1)[1].rsplit("---", 1)[0])
+
+    order = ["find_dependencies", "resolve_versions", "locate_callsites",
+             "read_changelogs", "rank_verdict"]
+    assert list(doc["steps"]) == order
+    assert [p["name"] for p in doc["parameters"]] == ["root"]
+
+    # Every stage but the first is fed by an edge onto the one before it, and
+    # the two that take a path are given the parameter. That wiring is the
+    # whole reason compute_verdict no longer reads a file from disk.
+    for earlier, later in zip(order, order[1:]):
+        argv = doc["steps"][later]["argv"]
+        assert doc["steps"][later]["depends_on"] == [earlier]
+        assert any(a.startswith(f"@{earlier}{{") for a in argv[3:]), later
+    assert "$root" in doc["steps"]["find_dependencies"]["argv"]
+    assert "$root" in doc["steps"]["locate_callsites"]["argv"]
+
+
+def test_the_embedded_scripts_are_the_scripts_on_disk():
+    """base64 or source, the Play must carry what the tests exercised."""
+    yaml = pytest.importorskip("yaml")
+    play = _play()
+    inner = play.split("/**\n", 1)[1].split("\n */\n", 1)[0]
+    stripped = "\n".join(
+        line[3:] if line.startswith(" * ") else line[2:] if line.startswith(" *") else line
+        for line in inner.split("\n"))
+    doc = yaml.safe_load(stripped.split("---\n", 1)[1].rsplit("---", 1)[0])
+
+    for step, script in [("find_dependencies", "parse_manifest"),
+                         ("resolve_versions", "fetch_registry"),
+                         ("locate_callsites", "find_callsites"),
+                         ("read_changelogs", "fetch_changelog"),
+                         ("rank_verdict", "compute_verdict")]:
+        with open(os.path.join(STEPS, f"{script}.py")) as handle:
+            on_disk = handle.read().rstrip("\n")
+        embedded = doc["steps"][step]["argv"][2].lstrip("\n").rstrip("\n")
+        if embedded.startswith("import base64;exec("):
+            blob = embedded.split("'")[1]
+            embedded = base64.b64decode(blob).decode("utf-8").rstrip("\n")
+        assert embedded == on_disk, f"{step} does not carry steps/{script}.py"

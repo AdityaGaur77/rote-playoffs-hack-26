@@ -79,7 +79,7 @@ simplification.
 | Machine setup | **done** |
 | Warm-up Plays (`hello` 9/9, `dns-propagation-check` 6/6) | **done** |
 | Recorded exploration (8 good captures) | **done** |
-| Crystallization (`main.ts` correct and portable) | **generated — 3 rote syntax tokens left to confirm** |
+| Crystallization (`main.ts` correct and portable) | **done — generated, syntax confirmed, frontmatter parses** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
 | Lint, release, publish | not started |
 
@@ -177,15 +177,16 @@ steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if
 tools/inline_steps.py      [--json]                           -> portable argv prefixes
 tools/build_play.py        [--check]                          -> generates play/main.ts
 play/main.ts               generated, 64 KB                   -> the Play
+tools/build_play.py        [--check] [--base64]                 -> generates it
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 122 tests
+tests/test_steps.py                                           -> 124 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **118 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **120 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -347,30 +348,62 @@ the steps do not depend on whether the value edge resolves `.stdout.text` or
 `.stdout.json.packed`. That was deliberate: it decouples the Python from the one
 question still open.
 
-### The three tokens still open
+### The syntax, confirmed
 
-These are rote's own syntax and cannot be settled from this repo. They are
-isolated as three constants at the top of `tools/build_play.py`:
+Settled against `~/.rote/flows/modiqo/dns-propagation-check/main.ts` — a
+released Play by the Modiqo CEO, and a better reference than the guidance text
+because it is known to run. Note the path: installed Plays live under
+`flows/<publisher>/<name>/`, not `flows/<name>/`.
 
-| Constant | Current guess | What it is |
+| | Form | Note |
 |---|---|---|
-| `PARAM` | `${root}` | how a declared parameter is interpolated into a step's argv |
-| `EDGE` | `@find_dependencies.stdout.text` | how one step references another's output |
-| `BODY_READ` | `steps.rank_verdict.stdout.json.report` | how the presentation body reads a step's output |
+| Parameter | `$root` | a bare `$name`, **not** `${name}` |
+| Value edge | `@step{$.stdout.text \| fromjson \| .packed}` | `@step{...}` wrapping a jq expression over the step outcome |
+| Body | `loadPresentationContext()` + `ctx.step(stepName("..."))` | see below |
 
-`EDGE` follows the form recorded in section 9 step 2. `PARAM` and `BODY_READ`
-are guesses. Confirm all three, correct the constants, re-run `build_play.py`,
-and the whole 64 KB file is correct:
+Two of the three earlier guesses were wrong, which is why they were isolated in
+one file rather than spread through a 64 KB document.
 
-```bash
-rote guidance play crystallization | cat
+### Steps carry literal Python, not base64
+
+The reference Play embeds its step scripts as readable source in a YAML block
+scalar (`- |2`, then a blank line, then the body indented two past the sequence
+item). `build_play.py` now does the same. It costs about the same bytes as
+base64 and buys the thing base64 destroys: a judge inspecting the Play before
+running it can read exactly what it will do.
+
+`--base64` still produces the opaque form if a parser ever objects to something
+in the source. Both modes are tested and `--check` accepts either.
+
+The generator verifies itself: it strips the ` * ` prefix, parses the
+frontmatter with PyYAML, and asserts every embedded script round-trips to the
+exact bytes in `steps/`. A Play that fails that is not written.
+
+### The body is the presentation SDK, not process.stdout.write
+
+```ts
+const { FlowOutput, loadPresentationContext, stepName } =
+  await import("__ROTE_PRESENTATION_SDK__");
+const out = new FlowOutput();
+const ctx = await loadPresentationContext();
+const step = ctx.step(stepName("rank_verdict"));
 ```
 
-Faster, if it is still on the machine: read the warm-up Play that already used a
-parameter — `~/.rote/flows/dns-propagation-check/main.ts` — and copy its forms
-verbatim. A working example beats the reference.
+`step.outcome.status` is `completed` / `restored` / `skipped` / `blocked` /
+failed, and the payload is `outcome.output.body.stdout.text` — a string to be
+`JSON.parse`d. Output goes through `out.human()`, `out.summary()` and
+`out.result()`.
 
-`rote play lint` will catch a wrong guess before anyone sees it.
+Our body builds the same stage ledger the reference does. That is not
+decoration: when a stage degrades, the rows it fed report REVIEW rather than
+SAFE, and the ledger is where you see which stage and why.
+
+### `root` is now optional, defaulting to `.`
+
+The reference makes every parameter optional with a default, and it is the
+better call for adoption: `rote play run <url>` with no arguments triages the
+directory you are standing in. A Play that needs an argument is a chore; one
+that runs bare is a habit.
 
 ### Presentation lives in Python, not TypeScript
 
@@ -388,12 +421,14 @@ TypeScript in the Play is two lines.
    tell when it lands. Everything below proceeds in parallel; only step 8 is
    gated on it.
 
-2. **Confirm the three tokens** in `tools/build_play.py` (see section 8), then:
+2. **Build the Play.** The syntax is settled; this just writes the file.
    ```bash
    python3 tools/build_play.py
    ```
-   Pipe `rote guidance` to `cat` — it opens a pager that will eat anything you
-   paste next.
+   It refuses to write a Play whose frontmatter does not parse, so a clean run
+   is already a check. If `rote play lint` still objects to something in the
+   embedded source, `python3 tools/build_play.py --base64` falls back to the
+   opaque form.
 
 3. **Copy the Play into place and run it against the demo project.**
    ```bash
@@ -476,8 +511,14 @@ TypeScript in the Play is two lines.
   crystallized. Recorder first, every time.
 - **Steps have no TTY.** Pass `--yes` to anything that might prompt.
 - **In the Play body:** no literal `*/` inside the frontmatter comment (it closes the block
-  early); quote non-string defaults (`default: '20'`, not `default: 20`);
-  `process.stdout.write`, never `console.log`.
+  early); quote non-string defaults (`default: '20'`, not `default: 20`). Output goes through
+  the presentation SDK — `out.human()` / `out.summary()` / `out.result()` — **not**
+  `process.stdout.write` and not `console.log`.
+- **Installed Plays live under `~/.rote/flows/<publisher>/<name>/`**, not `flows/<name>/`.
+  `modiqo/dns-propagation-check` is the best syntax reference on the machine; read it before
+  guessing at anything.
+- **Parameters are `$name`, not `${name}`.** Value edges are `@step{<jq>}`, and the jq runs over
+  the step outcome, so a field is `@step{$.stdout.text | fromjson | .packed}`.
 
 ---
 

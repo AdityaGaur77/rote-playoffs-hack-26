@@ -150,10 +150,18 @@ python3 tools/build_play.py --check    # fail if a step changed since it was gen
 The `--check` form runs in the test suite, so a stale Play is a test failure rather than a
 published surprise. `play/deps.toml` declares `python3` and nothing else.
 
-Three constants at the top of `tools/build_play.py` — parameter interpolation, value-edge
-reference, and how the presentation body reads a step's output — are rote's own syntax and must be
-confirmed against the local install (`rote guidance play crystallization | cat`) before the first
-publish. Everything else in the file is mechanical.
+The steps travel as **literal Python in a YAML block scalar**, not base64 — the same way
+`modiqo/dns-propagation-check` embeds its own. It costs about the same bytes and buys the thing
+base64 destroys: someone inspecting the Play before running it can read exactly what it will do.
+`--base64` keeps the opaque form available as a fallback; both modes are tested.
+
+The generator verifies itself. It strips the comment prefix, parses the frontmatter with PyYAML,
+and asserts every embedded script round-trips to the exact bytes in `steps/`. A Play that fails
+that is never written.
+
+rote's own syntax, confirmed against that reference Play: a parameter is a bare `$root`, a value
+edge is `@step{$.stdout.text | fromjson | .packed}`, and the body reads step outputs through the
+presentation SDK (`loadPresentationContext`, `ctx.step(stepName(...))`, `out.human()`).
 
 ## Optional GITHUB_TOKEN
 
@@ -188,7 +196,7 @@ The analysis payload is complete and tested, and the Play is generated end to en
 five-stage chain has been run against a live PyPI and a stub GitHub API, and every failure mode —
 empty upstream, malformed upstream, bad root, rate limit, a stage skipped entirely — is covered.
 
-Remaining before publishing: confirm the three rote syntax constants in `tools/build_play.py`, run
-`rote play lint` and `rote play release`, and get into the `hackathon` org. See
+Remaining before publishing: run `rote play lint` and `rote play release`, and get into the
+`hackathon` org. See
 [`docs/HANDOFF.md`](docs/HANDOFF.md) for the ordered list and [`docs/PLAN.md`](docs/PLAN.md) for
 the reasoning.

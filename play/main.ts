@@ -1,77 +1,1550 @@
 #!/usr/bin/env -S rote play run
 /**
+ * Upgrade Impact Triage
+ *
+ * Of your outdated dependencies, which ones will actually break you.
+ *
  * @rote-frontmatter
  * ---
  * name: upgrade-impact-triage
- * version: "0.1.0"
- * description: "Of your outdated dependencies, which ones ship breaking changes in code you actually import? Reads every manifest under <root>, resolves current versus latest from npm, PyPI or crates.io, reads the GitHub release notes between the two, and finds the files and line numbers that import each package. Ranks the result ACT (breaking, and you call it), REVIEW (you call it, but the notes could not be read), SAFE (transitive, or the notes were read and were clean) or CURRENT. An unreadable changelog reports as REVIEW, never as SAFE, so a rate-limited run produces more rows to check by hand and never fewer warnings. Standard library Python only; GITHUB_TOKEN is optional and raises the API rate limit."
+ * version: 0.1.0
+ * description: "Of your outdated dependencies, which ones ship breaking changes in code you actually import? Reads every manifest under root, resolves current versus latest from npm, PyPI or crates.io, reads the GitHub release notes between the two, and finds the files and line numbers that import each package. Ranks each dependency ACT (breaking changes, and you call it directly), REVIEW (you call it, but the notes could not be read), SAFE (transitive, or the notes were read and were clean) or CURRENT. An unreadable changelog reports as REVIEW and never as SAFE, so a rate-limited or offline run produces more rows to check by hand and never fewer warnings. Standard library Python only; GITHUB_TOKEN is optional and raises the API rate limit."
+ * source: https://semver.org/
  * provenance:
  *   author: adityagaur <adityagaur12077@gmail.com>
- * parameters:
- *   - name: root
- *     type: string
- *     required: true
- *     description: 'Path to the project to triage. Use . for the current directory.'
+ *   tier: local
+ *   workspace: upgrade-impact-triage
  * metadata:
  *   rote_version: "0.78.0"
+ *   version: "0.1.0"
  *   status: draft
  *   kind: atomic
  *   flow_type: parallel
  *   execution_model: steps_with_presentation
+ *   format: typescript
+ *   requires_endpoints: []
  *   requires_sessions: false
+ *   discoverability:
+ *     tags:
+ *     - domain-software-development
+ *     - software-development
+ *     - job-dependency-upgrade
+ *     - tool-package-registry
+ *     - tool-github
+ *     - effect-read-only
+ * parameters:
+ * - name: root
+ *   param_type: string
+ *   required: false
+ *   default: '.'
+ *   description: Path to the project to triage; defaults to the current directory
+ *   example: .
+ *   valid_values: null
+ * contract:
+ *   atomic: true
+ *   input:
+ *     type: none
+ *   output:
+ *     format: json
+ *     destination: stdout
+ *   composable: true
  * steps:
  *   find_dependencies:
  *     type: process.exec
+ *     timeout_ms: 30000
  *     argv:
- *     - "python3"
- *     - "-c"
- *     - "import base64;exec(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGVwIDEg4oCUIGZpbmQgZGVwZW5kZW5jeSBtYW5pZmVzdHMgdW5kZXIgYSByb290IGFuZCBlbWl0IG9uZSBmbGF0IGRlcGVuZGVuY3kgbGlzdC4KCkNvbnRyYWN0IChyb3RlIHN0ZXApOgogIHN0ZG91dCBpcyBkYXRhIChvbmUgSlNPTiBvYmplY3QpLCBleGl0IHN0YXR1cyBpcyB0aGUgZmFpbHVyZSBzaWduYWwuCiAgRXhwZWN0ZWQgYWJzZW5jZSAtPiB7Im9rIjogdHJ1ZSwgIndhcm5pbmciOiAuLi59IGV4aXQgMC4KICBIYXJkIGZhdWx0ICAgICAgIC0+IG1lc3NhZ2Ugb24gc3RkZXJyLCBleGl0IDIuCgpDb2xsZWN0aW9ucyBjcm9zcyBzdGVwIGJvdW5kYXJpZXMgYXMgYSBkZWxpbWl0ZWQgc2NhbGFyLCBiZWNhdXNlIHZhbHVlLWVkZ2UganEKbXVzdCByZXNvbHZlIHRvIGEgc2NhbGFyLiBSZWNvcmRzIGFyZSBSUy1zZXBhcmF0ZWQsIGZpZWxkcyBGUy1zZXBhcmF0ZWQ6CiAgZWNvc3lzdGVtIEZTIG5hbWUgRlMgY3VycmVudF9zcGVjCiIiIgppbXBvcnQganNvbgppbXBvcnQgb3MKaW1wb3J0IHJlCmltcG9ydCBzeXMKCkZTID0gY2hyKDMxKQpSUyA9IGNocigzMCkKClNLSVBfRElSUyA9IHsKICAgICIuZ2l0IiwgIm5vZGVfbW9kdWxlcyIsICJ2ZW52IiwgIi52ZW52IiwgIl9fcHljYWNoZV9fIiwgInRhcmdldCIsCiAgICAiZGlzdCIsICJidWlsZCIsICIudG94IiwgIi5teXB5X2NhY2hlIiwgInNpdGUtcGFja2FnZXMiLCAiLm5leHQiLAp9CgoKZGVmIGRpZShtc2cpOgogICAgcHJpbnQoZiJwYXJzZV9tYW5pZmVzdDoge21zZ30iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICByYWlzZSBTeXN0ZW1FeGl0KDIpCgoKZGVmIGVtaXQocGF5bG9hZCk6CiAgICBzeXMuc3Rkb3V0LndyaXRlKGpzb24uZHVtcHMocGF5bG9hZCkgKyAiXG4iKQogICAgcmFpc2UgU3lzdGVtRXhpdCgwKQoKCmRlZiBjbGVhbl92ZXJzaW9uKHNwZWMpOgogICAgIiIiU3RyaXAgcmFuZ2Ugb3BlcmF0b3JzIHRvIGEgYmFyZSB2ZXJzaW9uLiAnXjEuMi4zJyAtPiAnMS4yLjMnLiIiIgogICAgaWYgbm90IGlzaW5zdGFuY2Uoc3BlYywgc3RyKToKICAgICAgICByZXR1cm4gIiIKICAgIG0gPSByZS5zZWFyY2gociIoXGQrKD86XC5cZCspKig/OlstK11bMC05QS1aYS16LlwtXSspPykiLCBzcGVjKQogICAgcmV0dXJuIG0uZ3JvdXAoMSkgaWYgbSBlbHNlICIiCgoKZGVmIGZyb21fcGFja2FnZV9qc29uKHBhdGgpOgogICAgd2l0aCBvcGVuKHBhdGgsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIGZoOgogICAgICAgIGRhdGEgPSBqc29uLmxvYWQoZmgpCiAgICBvdXQgPSBbXQogICAgZm9yIGZpZWxkIGluICgiZGVwZW5kZW5jaWVzIiwgImRldkRlcGVuZGVuY2llcyIpOgogICAgICAgIGZvciBuYW1lLCBzcGVjIGluIChkYXRhLmdldChmaWVsZCkgb3Ige30pLml0ZW1zKCk6CiAgICAgICAgICAgICMgU2tpcCBub24tcmVnaXN0cnkgc3BlY3M6IGZpbGU6LCBsaW5rOiwgZ2l0Kywgd29ya3NwYWNlOiwgbnBtIGFsaWFzCiAgICAgICAgICAgIGlmIGlzaW5zdGFuY2Uoc3BlYywgc3RyKSBhbmQgcmUubWF0Y2gociJeKGZpbGU6fGxpbms6fGdpdHxodHRwcz86fHdvcmtzcGFjZTp8bnBtOikiLCBzcGVjKToKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIG91dC5hcHBlbmQoKCJucG0iLCBuYW1lLCBjbGVhbl92ZXJzaW9uKHNwZWMpKSkKICAgIHJldHVybiBvdXQKCgpkZWYgZnJvbV9weXByb2plY3QocGF0aCk6CiAgICB0cnk6CiAgICAgICAgaW1wb3J0IHRvbWxsaWIKICAgIGV4Y2VwdCBNb2R1bGVOb3RGb3VuZEVycm9yOgogICAgICAgIHJldHVybiBbXQogICAgd2l0aCBvcGVuKHBhdGgsICJyYiIpIGFzIGZoOgogICAgICAgIGRhdGEgPSB0b21sbGliLmxvYWQoZmgpCiAgICBvdXQgPSBbXQogICAgcHJvamVjdCA9IGRhdGEuZ2V0KCJwcm9qZWN0Iikgb3Ige30KICAgIGZvciBlbnRyeSBpbiBwcm9qZWN0LmdldCgiZGVwZW5kZW5jaWVzIikgb3IgW106CiAgICAgICAgbmFtZSA9IHJlLnNwbGl0KHIiWzw+PSF+XFs7IF0iLCBlbnRyeS5zdHJpcCgpLCBtYXhzcGxpdD0xKVswXQogICAgICAgIGlmIG5hbWU6CiAgICAgICAgICAgIG91dC5hcHBlbmQoKCJweXBpIiwgbmFtZSwgY2xlYW5fdmVyc2lvbihlbnRyeSkpKQogICAgcG9ldHJ5ID0gKChkYXRhLmdldCgidG9vbCIpIG9yIHt9KS5nZXQoInBvZXRyeSIpIG9yIHt9KS5nZXQoImRlcGVuZGVuY2llcyIpIG9yIHt9CiAgICBmb3IgbmFtZSwgc3BlYyBpbiBwb2V0cnkuaXRlbXMoKToKICAgICAgICBpZiBuYW1lLmxvd2VyKCkgPT0gInB5dGhvbiI6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgaWYgaXNpbnN0YW5jZShzcGVjLCBkaWN0KToKICAgICAgICAgICAgc3BlYyA9IHNwZWMuZ2V0KCJ2ZXJzaW9uIiwgIiIpCiAgICAgICAgb3V0LmFwcGVuZCgoInB5cGkiLCBuYW1lLCBjbGVhbl92ZXJzaW9uKHNwZWMpKSkKICAgIHJldHVybiBvdXQKCgpkZWYgZnJvbV9yZXF1aXJlbWVudHMocGF0aCk6CiAgICBvdXQgPSBbXQogICAgd2l0aCBvcGVuKHBhdGgsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIGZoOgogICAgICAgIGZvciBsaW5lIGluIGZoOgogICAgICAgICAgICBsaW5lID0gbGluZS5zcGxpdCgiIyIsIDEpWzBdLnN0cmlwKCkKICAgICAgICAgICAgaWYgbm90IGxpbmUgb3IgbGluZS5zdGFydHN3aXRoKCItIik6CiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBuYW1lID0gcmUuc3BsaXQociJbPD49IX5cWzsgXSIsIGxpbmUsIG1heHNwbGl0PTEpWzBdCiAgICAgICAgICAgIGlmIG5hbWU6CiAgICAgICAgICAgICAgICBvdXQuYXBwZW5kKCgicHlwaSIsIG5hbWUsIGNsZWFuX3ZlcnNpb24obGluZSkpKQogICAgcmV0dXJuIG91dAoKCmRlZiBmcm9tX2NhcmdvKHBhdGgpOgogICAgdHJ5OgogICAgICAgIGltcG9ydCB0b21sbGliCiAgICBleGNlcHQgTW9kdWxlTm90Rm91bmRFcnJvcjoKICAgICAgICByZXR1cm4gW10KICAgIHdpdGggb3BlbihwYXRoLCAicmIiKSBhcyBmaDoKICAgICAgICBkYXRhID0gdG9tbGxpYi5sb2FkKGZoKQogICAgb3V0ID0gW10KICAgIGZvciBmaWVsZCBpbiAoImRlcGVuZGVuY2llcyIsICJkZXYtZGVwZW5kZW5jaWVzIik6CiAgICAgICAgZm9yIG5hbWUsIHNwZWMgaW4gKGRhdGEuZ2V0KGZpZWxkKSBvciB7fSkuaXRlbXMoKToKICAgICAgICAgICAgaWYgaXNpbnN0YW5jZShzcGVjLCBkaWN0KToKICAgICAgICAgICAgICAgIGlmICJwYXRoIiBpbiBzcGVjIG9yICJnaXQiIGluIHNwZWM6CiAgICAgICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgICAgIHNwZWMgPSBzcGVjLmdldCgidmVyc2lvbiIsICIiKQogICAgICAgICAgICBvdXQuYXBwZW5kKCgiY3JhdGVzIiwgbmFtZSwgY2xlYW5fdmVyc2lvbihzcGVjKSkpCiAgICByZXR1cm4gb3V0CgoKUkVBREVSUyA9IHsKICAgICJwYWNrYWdlLmpzb24iOiBmcm9tX3BhY2thZ2VfanNvbiwKICAgICJweXByb2plY3QudG9tbCI6IGZyb21fcHlwcm9qZWN0LAogICAgInJlcXVpcmVtZW50cy50eHQiOiBmcm9tX3JlcXVpcmVtZW50cywKICAgICJDYXJnby50b21sIjogZnJvbV9jYXJnbywKfQoKCmRlZiBtYWluKCk6CiAgICByb290ID0gc3lzLmFyZ3ZbMV0gaWYgbGVuKHN5cy5hcmd2KSA+IDEgZWxzZSAiLiIKICAgIGlmIG5vdCBvcy5wYXRoLmlzZGlyKHJvb3QpOgogICAgICAgIGRpZShmInJvb3QgaXMgbm90IGEgZGlyZWN0b3J5OiB7cm9vdH0iKQoKICAgIGRlcHMsIHNlZW4sIG1hbmlmZXN0cywgdW5yZWFkYWJsZSA9IFtdLCBzZXQoKSwgW10sIFtdCiAgICBmb3IgZGlycGF0aCwgZGlybmFtZXMsIGZpbGVuYW1lcyBpbiBvcy53YWxrKHJvb3QpOgogICAgICAgIGRpcm5hbWVzWzpdID0gW2QgZm9yIGQgaW4gZGlybmFtZXMgaWYgZCBub3QgaW4gU0tJUF9ESVJTIGFuZCBub3QgZC5zdGFydHN3aXRoKCIuIildCiAgICAgICAgZm9yIGZuYW1lIGluIGZpbGVuYW1lczoKICAgICAgICAgICAgcmVhZGVyID0gUkVBREVSUy5nZXQoZm5hbWUpCiAgICAgICAgICAgIGlmIG5vdCByZWFkZXI6CiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBmdWxsID0gb3MucGF0aC5qb2luKGRpcnBhdGgsIGZuYW1lKQogICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICBmb3VuZCA9IHJlYWRlcihmdWxsKQogICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzogICAgICAgICAgICAgICAgICAgICAgIyBub3FhOiBCTEUwMDEKICAgICAgICAgICAgICAgIHVucmVhZGFibGUuYXBwZW5kKGYie29zLnBhdGgucmVscGF0aChmdWxsLCByb290KX06IHtleGN9IikKICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgIG1hbmlmZXN0cy5hcHBlbmQob3MucGF0aC5yZWxwYXRoKGZ1bGwsIHJvb3QpKQogICAgICAgICAgICBmb3IgZWNvLCBuYW1lLCB2ZXIgaW4gZm91bmQ6CiAgICAgICAgICAgICAgICBrZXkgPSAoZWNvLCBuYW1lLmxvd2VyKCkpCiAgICAgICAgICAgICAgICBpZiBrZXkgaW4gc2VlbjoKICAgICAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICAgICAgc2Vlbi5hZGQoa2V5KQogICAgICAgICAgICAgICAgZGVwcy5hcHBlbmQoKGVjbywgbmFtZSwgdmVyKSkKCiAgICBpZiBub3QgbWFuaWZlc3RzOgogICAgICAgIGlmIHVucmVhZGFibGU6CiAgICAgICAgICAgIHdhcm5pbmcgPSAiZXZlcnkgbWFuaWZlc3QgZm91bmQgZmFpbGVkIHRvIHBhcnNlOiAiICsgIjsgIi5qb2luKHVucmVhZGFibGUpCiAgICAgICAgZWxzZToKICAgICAgICAgICAgd2FybmluZyA9IGYibm8gc3VwcG9ydGVkIG1hbmlmZXN0IGZvdW5kIHVuZGVyIHtyb290fSIKICAgICAgICBlbWl0KHsKICAgICAgICAgICAgIm9rIjogVHJ1ZSwgIndhcm5pbmciOiB3YXJuaW5nLAogICAgICAgICAgICAiY291bnQiOiAwLCAicGFja2VkIjogIiIsICJtYW5pZmVzdHMiOiAiIiwgImVjb3N5c3RlbXMiOiAiIiwKICAgICAgICB9KQoKICAgIHBhY2tlZCA9IFJTLmpvaW4oRlMuam9pbihbZSwgbiwgdl0pIGZvciBlLCBuLCB2IGluIGRlcHMpCiAgICBwYXlsb2FkID0gewogICAgICAgICJvayI6IFRydWUsCiAgICAgICAgImNvdW50IjogbGVuKGRlcHMpLAogICAgICAgICJwYWNrZWQiOiBwYWNrZWQsCiAgICAgICAgIm1hbmlmZXN0cyI6ICIsIi5qb2luKHNvcnRlZChtYW5pZmVzdHMpKSwKICAgICAgICAiZWNvc3lzdGVtcyI6ICIsIi5qb2luKHNvcnRlZCh7ZSBmb3IgZSwgXywgXyBpbiBkZXBzfSkpLAogICAgfQogICAgaWYgdW5yZWFkYWJsZToKICAgICAgICBwYXlsb2FkWyJ3YXJuaW5nIl0gPSAiOyAiLmpvaW4odW5yZWFkYWJsZSkKICAgIGVtaXQocGF5bG9hZCkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgbWFpbigpCg==').decode())"
- *     - "${root}"
+ *     - python3
+ *     - -c
+ *     - |2
+ *
+ *       #!/usr/bin/env python3
+ *       """Step 1 — find dependency manifests under a root and emit one flat dependency list.
+ *
+ *       Contract (rote step):
+ *         stdout is data (one JSON object), exit status is the failure signal.
+ *         Expected absence -> {"ok": true, "warning": ...} exit 0.
+ *         Hard fault       -> message on stderr, exit 2.
+ *
+ *       Collections cross step boundaries as a delimited scalar, because value-edge jq
+ *       must resolve to a scalar. Records are RS-separated, fields FS-separated:
+ *         ecosystem FS name FS current_spec
+ *       """
+ *       import json
+ *       import os
+ *       import re
+ *       import sys
+ *
+ *       FS = chr(31)
+ *       RS = chr(30)
+ *
+ *       SKIP_DIRS = {
+ *           ".git", "node_modules", "venv", ".venv", "__pycache__", "target",
+ *           "dist", "build", ".tox", ".mypy_cache", "site-packages", ".next",
+ *       }
+ *
+ *
+ *       def die(msg):
+ *           print(f"parse_manifest: {msg}", file=sys.stderr)
+ *           raise SystemExit(2)
+ *
+ *
+ *       def emit(payload):
+ *           sys.stdout.write(json.dumps(payload) + "\n")
+ *           raise SystemExit(0)
+ *
+ *
+ *       def clean_version(spec):
+ *           """Strip range operators to a bare version. '^1.2.3' -> '1.2.3'."""
+ *           if not isinstance(spec, str):
+ *               return ""
+ *           m = re.search(r"(\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.\-]+)?)", spec)
+ *           return m.group(1) if m else ""
+ *
+ *
+ *       def from_package_json(path):
+ *           with open(path, encoding="utf-8") as fh:
+ *               data = json.load(fh)
+ *           out = []
+ *           for field in ("dependencies", "devDependencies"):
+ *               for name, spec in (data.get(field) or {}).items():
+ *                   # Skip non-registry specs: file:, link:, git+, workspace:, npm alias
+ *                   if isinstance(spec, str) and re.match(r"^(file:|link:|git|https?:|workspace:|npm:)", spec):
+ *                       continue
+ *                   out.append(("npm", name, clean_version(spec)))
+ *           return out
+ *
+ *
+ *       def from_pyproject(path):
+ *           try:
+ *               import tomllib
+ *           except ModuleNotFoundError:
+ *               return []
+ *           with open(path, "rb") as fh:
+ *               data = tomllib.load(fh)
+ *           out = []
+ *           project = data.get("project") or {}
+ *           for entry in project.get("dependencies") or []:
+ *               name = re.split(r"[<>=!~\[; ]", entry.strip(), maxsplit=1)[0]
+ *               if name:
+ *                   out.append(("pypi", name, clean_version(entry)))
+ *           poetry = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies") or {}
+ *           for name, spec in poetry.items():
+ *               if name.lower() == "python":
+ *                   continue
+ *               if isinstance(spec, dict):
+ *                   spec = spec.get("version", "")
+ *               out.append(("pypi", name, clean_version(spec)))
+ *           return out
+ *
+ *
+ *       def from_requirements(path):
+ *           out = []
+ *           with open(path, encoding="utf-8") as fh:
+ *               for line in fh:
+ *                   line = line.split("#", 1)[0].strip()
+ *                   if not line or line.startswith("-"):
+ *                       continue
+ *                   name = re.split(r"[<>=!~\[; ]", line, maxsplit=1)[0]
+ *                   if name:
+ *                       out.append(("pypi", name, clean_version(line)))
+ *           return out
+ *
+ *
+ *       def from_cargo(path):
+ *           try:
+ *               import tomllib
+ *           except ModuleNotFoundError:
+ *               return []
+ *           with open(path, "rb") as fh:
+ *               data = tomllib.load(fh)
+ *           out = []
+ *           for field in ("dependencies", "dev-dependencies"):
+ *               for name, spec in (data.get(field) or {}).items():
+ *                   if isinstance(spec, dict):
+ *                       if "path" in spec or "git" in spec:
+ *                           continue
+ *                       spec = spec.get("version", "")
+ *                   out.append(("crates", name, clean_version(spec)))
+ *           return out
+ *
+ *
+ *       READERS = {
+ *           "package.json": from_package_json,
+ *           "pyproject.toml": from_pyproject,
+ *           "requirements.txt": from_requirements,
+ *           "Cargo.toml": from_cargo,
+ *       }
+ *
+ *
+ *       def main():
+ *           root = sys.argv[1] if len(sys.argv) > 1 else "."
+ *           if not os.path.isdir(root):
+ *               die(f"root is not a directory: {root}")
+ *
+ *           deps, seen, manifests, unreadable = [], set(), [], []
+ *           for dirpath, dirnames, filenames in os.walk(root):
+ *               dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+ *               for fname in filenames:
+ *                   reader = READERS.get(fname)
+ *                   if not reader:
+ *                       continue
+ *                   full = os.path.join(dirpath, fname)
+ *                   try:
+ *                       found = reader(full)
+ *                   except Exception as exc:                      # noqa: BLE001
+ *                       unreadable.append(f"{os.path.relpath(full, root)}: {exc}")
+ *                       continue
+ *                   manifests.append(os.path.relpath(full, root))
+ *                   for eco, name, ver in found:
+ *                       key = (eco, name.lower())
+ *                       if key in seen:
+ *                           continue
+ *                       seen.add(key)
+ *                       deps.append((eco, name, ver))
+ *
+ *           if not manifests:
+ *               if unreadable:
+ *                   warning = "every manifest found failed to parse: " + "; ".join(unreadable)
+ *               else:
+ *                   warning = f"no supported manifest found under {root}"
+ *               emit({
+ *                   "ok": True, "warning": warning,
+ *                   "count": 0, "packed": "", "manifests": "", "ecosystems": "",
+ *               })
+ *
+ *           packed = RS.join(FS.join([e, n, v]) for e, n, v in deps)
+ *           payload = {
+ *               "ok": True,
+ *               "count": len(deps),
+ *               "packed": packed,
+ *               "manifests": ",".join(sorted(manifests)),
+ *               "ecosystems": ",".join(sorted({e for e, _, _ in deps})),
+ *           }
+ *           if unreadable:
+ *               payload["warning"] = "; ".join(unreadable)
+ *           emit(payload)
+ *
+ *
+ *       if __name__ == "__main__":
+ *           main()
+ *     - "$root"
  *   resolve_versions:
  *     type: process.exec
- *     argv:
- *     - "python3"
- *     - "-c"
- *     - "import base64;exec(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGVwIDIg4oCUIG9uZSBkZXBlbmRlbmN5LCBvbmUgcmVnaXN0cnkgcmVhZGluZy4KClJ1bnMgb25jZSBwZXIgZGVwZW5kZW5jeSB1bmRlciBgZm9yX2VhY2hgLiBBbnN3ZXJzOiB3aGF0IGlzIHRoZSBsYXRlc3QgdmVyc2lvbiwKaG93IGJpZyBpcyB0aGUgZ2FwLCBhbmQgd2hlcmUgZG9lcyBpdHMgc291cmNlIGxpdmUgKHNvIHRoZSBjaGFuZ2Vsb2cgc3RlcCBjYW4KZmluZCByZWxlYXNlIG5vdGVzKS4KCkNvbnRyYWN0IChyb3RlIHN0ZXApOgogIE5ldHdvcmsgdHJvdWJsZSBvciBhbiB1bmtub3duIHBhY2thZ2UgaXMgYW4gRVhQRUNURUQgQUJTRU5DRSAtPiBvazp0cnVlIHdpdGggYQogIHdhcm5pbmcsIGV4aXQgMCwgc28gb25lIGRlYWQgcGFja2FnZSBjYW5ub3Qga2lsbCBhIDQ3LWRlcGVuZGVuY3kgcmVwb3J0LgogIE9ubHkgYSBtYWxmb3JtZWQgaW52b2NhdGlvbiBpcyBhIGhhcmQgZmF1bHQgLT4gc3RkZXJyLCBleGl0IDIuCgpVc2VzIG9ubHkgdGhlIHN0YW5kYXJkIGxpYnJhcnksIHNvIGRlcHMudG9tbCBkZWNsYXJlcyBweXRob24zIGFuZCBub3RoaW5nIGVsc2UuCiIiIgppbXBvcnQganNvbgppbXBvcnQgcmUKaW1wb3J0IHN5cwppbXBvcnQgdGltZQppbXBvcnQgdXJsbGliLmVycm9yCmltcG9ydCB1cmxsaWIucmVxdWVzdAoKRlMgPSBjaHIoMzEpClJTID0gY2hyKDMwKQpVQSA9ICJ1cGdyYWRlLWltcGFjdC10cmlhZ2UvMC4xICgraHR0cHM6Ly9wbGF5Lm1vZGlxby5haSkiClRJTUVPVVQgPSAyMAoKCmRlZiBkaWUobXNnKToKICAgIHByaW50KGYiZmV0Y2hfcmVnaXN0cnk6IHttc2d9IiwgZmlsZT1zeXMuc3RkZXJyKQogICAgcmFpc2UgU3lzdGVtRXhpdCgyKQoKCmRlZiBlbWl0KHBheWxvYWQpOgogICAgc3lzLnN0ZG91dC53cml0ZShqc29uLmR1bXBzKHBheWxvYWQpICsgIlxuIikKICAgIHJhaXNlIFN5c3RlbUV4aXQoMCkKCgpkZWYgZ2V0X2pzb24odXJsLCBhdHRlbXB0cz0zKToKICAgICIiIkdFVCBKU09OIHdpdGggYSBVc2VyLUFnZW50LiBjcmF0ZXMuaW8gYW5zd2VycyA0MDMgd2l0aG91dCBvbmUuIiIiCiAgICBsYXN0ID0gIiIKICAgIGZvciBpIGluIHJhbmdlKGF0dGVtcHRzKToKICAgICAgICByZXEgPSB1cmxsaWIucmVxdWVzdC5SZXF1ZXN0KHVybCwgaGVhZGVycz17CiAgICAgICAgICAgICJVc2VyLUFnZW50IjogVUEsICJBY2NlcHQiOiAiYXBwbGljYXRpb24vanNvbiIsCiAgICAgICAgfSkKICAgICAgICB0cnk6CiAgICAgICAgICAgIHdpdGggdXJsbGliLnJlcXVlc3QudXJsb3BlbihyZXEsIHRpbWVvdXQ9VElNRU9VVCkgYXMgcmVzcDoKICAgICAgICAgICAgICAgIHJldHVybiBqc29uLmxvYWRzKHJlc3AucmVhZCgpLmRlY29kZSgidXRmLTgiKSksICIiCiAgICAgICAgZXhjZXB0IHVybGxpYi5lcnJvci5IVFRQRXJyb3IgYXMgZXhjOgogICAgICAgICAgICBpZiBleGMuY29kZSA9PSA0MDQ6CiAgICAgICAgICAgICAgICByZXR1cm4gTm9uZSwgIm5vdCBmb3VuZCBpbiByZWdpc3RyeSIKICAgICAgICAgICAgbGFzdCA9IGYiSFRUUCB7ZXhjLmNvZGV9IgogICAgICAgICAgICBpZiBleGMuY29kZSBpbiAoNDI5LCA1MDAsIDUwMiwgNTAzLCA1MDQpOgogICAgICAgICAgICAgICAgdGltZS5zbGVlcCgxLjUgKiAoaSArIDEpKQogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgcmV0dXJuIE5vbmUsIGxhc3QKICAgICAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGV4YzogICAgICAgICAgICAgICAgICAgICAgICAgICMgbm9xYTogQkxFMDAxCiAgICAgICAgICAgIGxhc3QgPSBzdHIoZXhjKQogICAgICAgICAgICB0aW1lLnNsZWVwKDEuMCAqIChpICsgMSkpCiAgICByZXR1cm4gTm9uZSwgbGFzdCBvciAidW5yZWFjaGFibGUiCgoKZGVmIHBhcnNlX3ZlcnNpb24odik6CiAgICBwYXJ0cyA9IHJlLmZpbmRhbGwociJcZCsiLCB2IG9yICIiKQogICAgcmV0dXJuIFtpbnQocCkgZm9yIHAgaW4gcGFydHNbOjNdXSArIFswXSAqICgzIC0gbGVuKHBhcnRzWzozXSkpCgoKZGVmIGlzX3ByZXJlbGVhc2Uodik6CiAgICByZXR1cm4gYm9vbChyZS5zZWFyY2gociJbLStdKGFscGhhfGJldGF8cmN8ZGV2fHByZXxhXGR8YlxkKSIsIHN0cih2KSwgcmUuSSkpCgoKZGVmIGdhcF9iZXR3ZWVuKGN1ciwgbmV3KToKICAgIGlmIG5vdCBjdXIgb3Igbm90IG5ldzoKICAgICAgICByZXR1cm4gInVua25vd24iCiAgICBjLCBuID0gcGFyc2VfdmVyc2lvbihjdXIpLCBwYXJzZV92ZXJzaW9uKG5ldykKICAgIGlmIG4gPT0gYzoKICAgICAgICByZXR1cm4gIm5vbmUiCiAgICBpZiBuIDwgYzoKICAgICAgICByZXR1cm4gImFoZWFkIgogICAgaWYgblswXSAhPSBjWzBdOgogICAgICAgIHJldHVybiAibWFqb3IiCiAgICBpZiBuWzFdICE9IGNbMV06CiAgICAgICAgcmV0dXJuICJtaW5vciIKICAgIHJldHVybiAicGF0Y2giCgoKZGVmIG5vcm1fcmVwbyh1cmwpOgogICAgIiIiTm9ybWFsaXNlIGEgcmVwb3NpdG9yeSBmaWVsZCB0byBvd25lci9uYW1lIG9uIEdpdEh1YiwgZWxzZSAnJy4KCiAgICBBbmNob3JzIG9uIHRoZSBGSVJTVCB0d28gcGF0aCBzZWdtZW50cyBhZnRlciB0aGUgaG9zdDogYSB0cmFja2VyIFVSTCBzdWNoIGFzCiAgICBnaXRodWIuY29tL251bXB5L251bXB5L2lzc3VlcyBtdXN0IHJlc29sdmUgdG8gbnVtcHkvbnVtcHksIG5ldmVyIG51bXB5L2lzc3Vlcy4KICAgICIiIgogICAgaWYgbm90IGlzaW5zdGFuY2UodXJsLCBzdHIpOgogICAgICAgIHJldHVybiAiIgogICAgbSA9IHJlLnNlYXJjaCgKICAgICAgICByImdpdGh1YlwuY29tWzovXSsoW14vXHMjP10rKS8oW14vXHMjP10rPykoPzpcLmdpdCk/KD86Wy8jP118JCkiLAogICAgICAgIHVybC5zdHJpcCgpLAogICAgKQogICAgaWYgbm90IG06CiAgICAgICAgcmV0dXJuICIiCiAgICBvd25lciwgbmFtZSA9IG0uZ3JvdXAoMSksIG0uZ3JvdXAoMikKICAgIGlmIG93bmVyLmxvd2VyKCkgaW4gKCJzcG9uc29ycyIsICJvcmdzIiwgImFwcHMiLCAic2V0dGluZ3MiKToKICAgICAgICByZXR1cm4gIiIKICAgIHJldHVybiBmIntvd25lcn0ve25hbWV9IgoKCmRlZiByZXBvX2Zyb21fdXJscyhwcm9qZWN0X3VybHMsICpmYWxsYmFja3MpOgogICAgIiIiRmluZCBhIHNvdXJjZSByZXBvIGFtb25nIFB5UEkgcHJvamVjdF91cmxzLgoKICAgIEtleXMgYXJlIGF1dGhvci1zdXBwbGllZCBhbmQgdGhlaXIgY2FzZSB2YXJpZXMgKCdzb3VyY2UnIGZvciBudW1weSwKICAgICdTb3VyY2UgQ29kZScgZm9yIG90aGVycyksIHNvIG1hdGNoIGNhc2UtaW5zZW5zaXRpdmVseSBvbiBhIHByaW9yaXR5IGxpc3QKICAgIGJlZm9yZSBzY2FubmluZyBldmVyeSB2YWx1ZSBmb3IgYW55IEdpdEh1YiBVUkwuCiAgICAiIiIKICAgIHVybHMgPSB7c3RyKGspLnN0cmlwKCkubG93ZXIoKTogdiBmb3IgaywgdiBpbiAocHJvamVjdF91cmxzIG9yIHt9KS5pdGVtcygpfQogICAgZm9yIGtleSBpbiAoInNvdXJjZSIsICJzb3VyY2UgY29kZSIsICJyZXBvc2l0b3J5IiwgImNvZGUiLCAiZ2l0aHViIiwgImhvbWVwYWdlIiwgImhvbWUiKToKICAgICAgICBmb3VuZCA9IG5vcm1fcmVwbyh1cmxzLmdldChrZXkpKQogICAgICAgIGlmIGZvdW5kOgogICAgICAgICAgICByZXR1cm4gZm91bmQKICAgIGZvciB2YWx1ZSBpbiB1cmxzLnZhbHVlcygpOiAgICAgICAgICAgICAgICAgIyBhbnkgR2l0SHViIFVSTCBiZWF0cyBub3RoaW5nCiAgICAgICAgZm91bmQgPSBub3JtX3JlcG8odmFsdWUpCiAgICAgICAgaWYgZm91bmQ6CiAgICAgICAgICAgIHJldHVybiBmb3VuZAogICAgZm9yIHZhbHVlIGluIGZhbGxiYWNrczoKICAgICAgICBmb3VuZCA9IG5vcm1fcmVwbyh2YWx1ZSkKICAgICAgICBpZiBmb3VuZDoKICAgICAgICAgICAgcmV0dXJuIGZvdW5kCiAgICByZXR1cm4gIiIKCgpkZWYgbnBtKG5hbWUpOgogICAgZGF0YSwgZXJyID0gZ2V0X2pzb24oZiJodHRwczovL3JlZ2lzdHJ5Lm5wbWpzLm9yZy97dXJsbGliLnJlcXVlc3QucXVvdGUobmFtZSwgc2FmZT0nQCcpfSIpCiAgICBpZiBkYXRhIGlzIE5vbmU6CiAgICAgICAgcmV0dXJuIE5vbmUsIGVycgogICAgbGF0ZXN0ID0gKChkYXRhLmdldCgiZGlzdC10YWdzIikgb3Ige30pLmdldCgibGF0ZXN0IikpIG9yICIiCiAgICByZXBvID0gKGRhdGEuZ2V0KCJyZXBvc2l0b3J5Iikgb3Ige30pCiAgICByZXBvX3VybCA9IHJlcG8uZ2V0KCJ1cmwiKSBpZiBpc2luc3RhbmNlKHJlcG8sIGRpY3QpIGVsc2UgcmVwbwogICAgcmV0dXJuIHsibGF0ZXN0IjogbGF0ZXN0LCAicmVwbyI6IG5vcm1fcmVwbyhyZXBvX3VybCl9LCAiIgoKCmRlZiBweXBpKG5hbWUpOgogICAgZGF0YSwgZXJyID0gZ2V0X2pzb24oZiJodHRwczovL3B5cGkub3JnL3B5cGkve3VybGxpYi5yZXF1ZXN0LnF1b3RlKG5hbWUpfS9qc29uIikKICAgIGlmIGRhdGEgaXMgTm9uZToKICAgICAgICByZXR1cm4gTm9uZSwgZXJyCiAgICBpbmZvID0gZGF0YS5nZXQoImluZm8iKSBvciB7fQogICAgcmVwbyA9IHJlcG9fZnJvbV91cmxzKGluZm8uZ2V0KCJwcm9qZWN0X3VybHMiKSwgaW5mby5nZXQoImhvbWVfcGFnZSIpKQogICAgcmV0dXJuIHsibGF0ZXN0IjogaW5mby5nZXQoInZlcnNpb24iKSBvciAiIiwgInJlcG8iOiByZXBvfSwgIiIKCgpkZWYgY3JhdGVzKG5hbWUpOgogICAgZGF0YSwgZXJyID0gZ2V0X2pzb24oZiJodHRwczovL2NyYXRlcy5pby9hcGkvdjEvY3JhdGVzL3t1cmxsaWIucmVxdWVzdC5xdW90ZShuYW1lKX0iKQogICAgaWYgZGF0YSBpcyBOb25lOgogICAgICAgIHJldHVybiBOb25lLCBlcnIKICAgIGNyYXRlID0gZGF0YS5nZXQoImNyYXRlIikgb3Ige30KICAgIHJlcG8gPSBub3JtX3JlcG8oY3JhdGUuZ2V0KCJyZXBvc2l0b3J5IikpCiAgICByZXR1cm4geyJsYXRlc3QiOiBjcmF0ZS5nZXQoIm1heF9zdGFibGVfdmVyc2lvbiIpIG9yIGNyYXRlLmdldCgibmV3ZXN0X3ZlcnNpb24iKSBvciAiIiwKICAgICAgICAgICAgInJlcG8iOiByZXBvfSwgIiIKCgpGRVRDSEVSUyA9IHsibnBtIjogbnBtLCAicHlwaSI6IHB5cGksICJjcmF0ZXMiOiBjcmF0ZXN9CgoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KIyBDYXJyaWVyIHJlY29yZCDigJQgaG93IGRlcGVuZGVuY3kgZmFjdHMgY3Jvc3MgYSBzdGVwIGJvdW5kYXJ5LgojCiMgRWFjaCBzdGFnZSBmaWxscyBpdHMgb3duIGNvbHVtbnMgYW5kIHBhc3NlcyB0aGUgcmVzdCB0aHJvdWdoLCBzbyB0aGUgd2hvbGUKIyB0cmlhZ2UgcnVucyBhcyBhIGxpbmVhciBEQUcgd2lyZWQgYnkgdmFsdWUgZWRnZXMuIE5vIHN0YWdlIG5lZWRzIGEgZmlsZSBvbgojIGRpc2ssIGFuZCBubyBzdGFnZSBuZWVkcyB0byBrbm93IGhvdyBtYW55IGRlcGVuZGVuY2llcyB0aGVyZSBhcmUuCiMKIyAgIDAgZWNvc3lzdGVtICAgMyBsYXRlc3QgICA2IG91dGRhdGVkICAgOSAgZmlyc3Rfc2l0ZSAgMTIgbWFya2VycwojICAgMSBuYW1lICAgICAgICA0IHJlcG8gICAgIDcgZGlyZWN0ICAgICAxMCBjaGVja2VkCiMgICAyIGN1cnJlbnQgICAgIDUgZ2FwICAgICAgOCBmaWxlcyAgICAgIDExIGJyZWFraW5nCiMKIyBCb29sZWFucyBhcmUgIjEiIC8gIjAiIHdoZW4ga25vd24gYW5kICIiIHdoZW4gdGhlIHN0YWdlIHRoYXQgZmlsbHMgdGhlbSBoYXMKIyBub3QgcnVuLiBUaGF0IHRoaXJkIHN0YXRlIGlzIGxvYWQtYmVhcmluZzogYW4gdW5maWxsZWQgY29sdW1uIG11c3QgcmVhZCBhcwojIFVOS05PV04gZG93bnN0cmVhbSwgbmV2ZXIgYXMgYSBjbGVhbiBiaWxsIG9mIGhlYWx0aC4KIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KQ09MUyA9IDEzCgoKZGVmIHNjcnViKHZhbHVlKToKICAgICIiIkZpZWxkIHRleHQgY2FuIG5ldmVyIGNvbnRhaW4gdGhlIGRlbGltaXRlcnMgdGhhdCBmcmFtZSBpdC4iIiIKICAgIHJldHVybiBzdHIodmFsdWUpLnJlcGxhY2UoRlMsICIgIikucmVwbGFjZShSUywgIiAiKQoKCmRlZiB1bnBhY2socGFja2VkKToKICAgICIiIkNhcnJpZXIgcm93cywgcGFkZGVkIHRvIENPTFMuIFNob3J0IHJvd3MgY29tZSBmcm9tIGFuIGVhcmxpZXIgc3RhZ2UuIiIiCiAgICByb3dzID0gW10KICAgIGZvciBjaHVuayBpbiAocGFja2VkIG9yICIiKS5zcGxpdChSUyk6CiAgICAgICAgaWYgY2h1bms6CiAgICAgICAgICAgIHJvd3MuYXBwZW5kKChjaHVuay5zcGxpdChGUykgKyBbIiJdICogQ09MUylbOkNPTFNdKQogICAgcmV0dXJuIHJvd3MKCgpkZWYgcmVwYWNrKHJvd3MpOgogICAgcmV0dXJuIFJTLmpvaW4oRlMuam9pbihzY3J1Yihjb2wpIGZvciBjb2wgaW4gcm93KSBmb3Igcm93IGluIHJvd3MpCgoKZGVmIHVwc3RyZWFtX3BhY2tlZChhcmcpOgogICAgIiIiVGhlIHByZXZpb3VzIHN0ZXAncyBvdXRwdXQsIGhvd2V2ZXIgdGhlIHZhbHVlIGVkZ2UgY2hvc2UgdG8gZGVsaXZlciBpdC4KCiAgICBBIHdob2xlIHN0ZG91dCBwYXlsb2FkIChhIEpTT04gb2JqZWN0KSBhbmQgYSBiYXJlIGBwYWNrZWRgIHNjYWxhciBhcmUgYm90aAogICAgYWNjZXB0ZWQsIHNvIHRoZSBzdGVwIGRvZXMgbm90IGRlcGVuZCBvbiB3aGV0aGVyIHRoZSBlZGdlIHJlc29sdmVzCiAgICBgLnN0ZG91dC50ZXh0YCBvciBgLnN0ZG91dC5qc29uLnBhY2tlZGAuCiAgICAiIiIKICAgIHRleHQgPSAoYXJnIG9yICIiKS5zdHJpcCgpCiAgICBpZiBub3QgdGV4dC5zdGFydHN3aXRoKCJ7Iik6CiAgICAgICAgcmV0dXJuIHRleHQKICAgIHRyeToKICAgICAgICBkb2MgPSBqc29uLmxvYWRzKHRleHQpCiAgICBleGNlcHQganNvbi5KU09ORGVjb2RlRXJyb3IgYXMgZXhjOgogICAgICAgIGRpZShmInVwc3RyZWFtIHBheWxvYWQgd2lsbCBub3QgcGFyc2UgYXMgSlNPTjoge2V4Y30iKQogICAgaWYgbm90IGlzaW5zdGFuY2UoZG9jLCBkaWN0KToKICAgICAgICBkaWUoInVwc3RyZWFtIHBheWxvYWQgaXMgbm90IGEgSlNPTiBvYmplY3QiKQogICAgcmV0dXJuIGRvYy5nZXQoInBhY2tlZCIsICIiKQoKCmRlZiByZXNvbHZlKGVjbywgbmFtZSwgY3VycmVudCk6CiAgICAiIiJPbmUgZGVwZW5kZW5jeSwgb25lIHJlZ2lzdHJ5IHJlYWRpbmcuCgogICAgTmV2ZXIgcmFpc2VzOiBhIHJlbW90ZSBwcm9ibGVtIGlzIGFuIGV4cGVjdGVkIGFic2VuY2UgY2FycmllZCBpbiB0aGUKICAgIHBheWxvYWQsIHNvIG9uZSBkZWFkIHBhY2thZ2UgY2Fubm90IGtpbGwgYSA0Ny1kZXBlbmRlbmN5IHJlcG9ydC4KICAgICIiIgogICAgZmV0Y2hlciA9IEZFVENIRVJTLmdldChlY28pCiAgICBiYXNlID0geyJvayI6IFRydWUsICJlY29zeXN0ZW0iOiBlY28sICJuYW1lIjogbmFtZSwgImN1cnJlbnQiOiBjdXJyZW50LAogICAgICAgICAgICAibGF0ZXN0IjogIiIsICJyZXBvIjogIiIsICJnYXAiOiAidW5rbm93biIsICJvdXRkYXRlZCI6IEZhbHNlfQoKICAgIGlmIG5vdCBmZXRjaGVyOgogICAgICAgIGJhc2VbIndhcm5pbmciXSA9IGYidW5zdXBwb3J0ZWQgZWNvc3lzdGVtOiB7ZWNvfSIKICAgICAgICByZXR1cm4gYmFzZQoKICAgIGZhY3RzLCBlcnIgPSBmZXRjaGVyKG5hbWUpCiAgICBpZiBmYWN0cyBpcyBOb25lOgogICAgICAgIGJhc2VbIndhcm5pbmciXSA9IGYie25hbWV9OiB7ZXJyfSIKICAgICAgICByZXR1cm4gYmFzZQoKICAgIGxhdGVzdCA9IGZhY3RzWyJsYXRlc3QiXQogICAgZ2FwID0gZ2FwX2JldHdlZW4oY3VycmVudCwgbGF0ZXN0KQogICAgYmFzZS51cGRhdGUoewogICAgICAgICJsYXRlc3QiOiBsYXRlc3QsCiAgICAgICAgInJlcG8iOiBmYWN0c1sicmVwbyJdLAogICAgICAgICJnYXAiOiBnYXAsCiAgICAgICAgIm91dGRhdGVkIjogZ2FwIGluICgibWFqb3IiLCAibWlub3IiLCAicGF0Y2giKSwKICAgICAgICAicHJlcmVsZWFzZSI6IGlzX3ByZXJlbGVhc2UobGF0ZXN0KSwKICAgIH0pCiAgICBpZiBub3QgZmFjdHNbInJlcG8iXToKICAgICAgICBiYXNlWyJ3YXJuaW5nIl0gPSBmIntuYW1lfTogbm8gR2l0SHViIHNvdXJjZSBVUkwgcHVibGlzaGVkOyBjaGFuZ2Vsb2cgdW5hdmFpbGFibGUiCiAgICByZXR1cm4gYmFzZQoKCmRlZiBydW5fYmF0Y2goYXJnKToKICAgICIiIlJlc29sdmUgZXZlcnkgZGVwZW5kZW5jeSB0aGUgbWFuaWZlc3Qgc3RlcCBmb3VuZCwgaW4gb25lIHN0ZXAuCgogICAgRmlsbHMgY2FycmllciBjb2x1bW5zIDItNiAoY3VycmVudCwgbGF0ZXN0LCByZXBvLCBnYXAsIG91dGRhdGVkKSBhbmQgbGVhdmVzCiAgICBldmVyeXRoaW5nIGVsc2UgZm9yIHRoZSBzdGFnZXMgZG93bnN0cmVhbS4KICAgICIiIgogICAgcm93cyA9IHVucGFjayh1cHN0cmVhbV9wYWNrZWQoYXJnKSkKICAgIGlmIG5vdCByb3dzOgogICAgICAgIGVtaXQoeyJvayI6IFRydWUsICJ3YXJuaW5nIjogIm5vIGRlcGVuZGVuY2llcyBvbiBpbnB1dCIsICJjb3VudCI6IDAsCiAgICAgICAgICAgICAgInJlc29sdmVkIjogMCwgIm91dGRhdGVkIjogMCwgInBhY2tlZCI6ICIifSkKCiAgICB3YXJuaW5ncyA9IFtdCiAgICBmb3Igcm93IGluIHJvd3M6CiAgICAgICAgcmVjID0gcmVzb2x2ZShyb3dbMF0sIHJvd1sxXSwgcm93WzJdKQogICAgICAgIGlmIHJlYy5nZXQoIndhcm5pbmciKToKICAgICAgICAgICAgd2FybmluZ3MuYXBwZW5kKHJlY1sid2FybmluZyJdKQogICAgICAgIHJvd1syXSA9IHJlY1siY3VycmVudCJdCiAgICAgICAgcm93WzNdID0gcmVjWyJsYXRlc3QiXQogICAgICAgIHJvd1s0XSA9IHJlY1sicmVwbyJdCiAgICAgICAgcm93WzVdID0gcmVjWyJnYXAiXQogICAgICAgIHJvd1s2XSA9ICIxIiBpZiByZWNbIm91dGRhdGVkIl0gZWxzZSAiMCIKCiAgICBwYXlsb2FkID0gewogICAgICAgICJvayI6IFRydWUsCiAgICAgICAgImNvdW50IjogbGVuKHJvd3MpLAogICAgICAgICJyZXNvbHZlZCI6IGxlbihyb3dzKSAtIGxlbih3YXJuaW5ncyksCiAgICAgICAgIm91dGRhdGVkIjogc3VtKDEgZm9yIHJvdyBpbiByb3dzIGlmIHJvd1s2XSA9PSAiMSIpLAogICAgICAgICJwYWNrZWQiOiByZXBhY2socm93cyksCiAgICB9CiAgICBpZiB3YXJuaW5nczoKICAgICAgICBwYXlsb2FkWyJ1bnJlc29sdmVkIl0gPSBsZW4od2FybmluZ3MpCiAgICAgICAgcGF5bG9hZFsid2FybmluZyJdID0gIjsgIi5qb2luKHdhcm5pbmdzWzo1XSkKICAgIGVtaXQocGF5bG9hZCkKCgpkZWYgbWFpbigpOgogICAgaWYgbGVuKHN5cy5hcmd2KSA+IDEgYW5kIHN5cy5hcmd2WzFdID09ICItLWJhdGNoIjoKICAgICAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgMzoKICAgICAgICAgICAgZGllKCJ1c2FnZTogZmV0Y2hfcmVnaXN0cnkucHkgLS1iYXRjaCA8dXBzdHJlYW0gcGF5bG9hZD4iKQogICAgICAgIHJ1bl9iYXRjaChzeXMuYXJndlsyXSkKCiAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgMzoKICAgICAgICBkaWUoInVzYWdlOiBmZXRjaF9yZWdpc3RyeS5weSA8ZWNvc3lzdGVtPiA8bmFtZT4gW2N1cnJlbnRfdmVyc2lvbl1cbiIKICAgICAgICAgICAgIiAgIG9yOiBmZXRjaF9yZWdpc3RyeS5weSAtLWJhdGNoIDx1cHN0cmVhbSBwYXlsb2FkPiIpCiAgICBlbWl0KHJlc29sdmUoc3lzLmFyZ3ZbMV0sIHN5cy5hcmd2WzJdLAogICAgICAgICAgICAgICAgIHN5cy5hcmd2WzNdIGlmIGxlbihzeXMuYXJndikgPiAzIGVsc2UgIiIpKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtYWluKCkK').decode())"
- *     - "--batch"
- *     - "@find_dependencies.stdout.text"
+ *     timeout_ms: 180000
  *     depends_on:
  *     - find_dependencies
+ *     argv:
+ *     - python3
+ *     - -c
+ *     - |2
+ *
+ *       #!/usr/bin/env python3
+ *       """Step 2 — one dependency, one registry reading.
+ *
+ *       Runs once per dependency under `for_each`. Answers: what is the latest version,
+ *       how big is the gap, and where does its source live (so the changelog step can
+ *       find release notes).
+ *
+ *       Contract (rote step):
+ *         Network trouble or an unknown package is an EXPECTED ABSENCE -> ok:true with a
+ *         warning, exit 0, so one dead package cannot kill a 47-dependency report.
+ *         Only a malformed invocation is a hard fault -> stderr, exit 2.
+ *
+ *       Uses only the standard library, so deps.toml declares python3 and nothing else.
+ *       """
+ *       import json
+ *       import re
+ *       import sys
+ *       import time
+ *       import urllib.error
+ *       import urllib.request
+ *
+ *       FS = chr(31)
+ *       RS = chr(30)
+ *       UA = "upgrade-impact-triage/0.1 (+https://play.modiqo.ai)"
+ *       TIMEOUT = 20
+ *
+ *
+ *       def die(msg):
+ *           print(f"fetch_registry: {msg}", file=sys.stderr)
+ *           raise SystemExit(2)
+ *
+ *
+ *       def emit(payload):
+ *           sys.stdout.write(json.dumps(payload) + "\n")
+ *           raise SystemExit(0)
+ *
+ *
+ *       def get_json(url, attempts=3):
+ *           """GET JSON with a User-Agent. crates.io answers 403 without one."""
+ *           last = ""
+ *           for i in range(attempts):
+ *               req = urllib.request.Request(url, headers={
+ *                   "User-Agent": UA, "Accept": "application/json",
+ *               })
+ *               try:
+ *                   with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+ *                       return json.loads(resp.read().decode("utf-8")), ""
+ *               except urllib.error.HTTPError as exc:
+ *                   if exc.code == 404:
+ *                       return None, "not found in registry"
+ *                   last = f"HTTP {exc.code}"
+ *                   if exc.code in (429, 500, 502, 503, 504):
+ *                       time.sleep(1.5 * (i + 1))
+ *                       continue
+ *                   return None, last
+ *               except Exception as exc:                          # noqa: BLE001
+ *                   last = str(exc)
+ *                   time.sleep(1.0 * (i + 1))
+ *           return None, last or "unreachable"
+ *
+ *
+ *       def parse_version(v):
+ *           parts = re.findall(r"\d+", v or "")
+ *           return [int(p) for p in parts[:3]] + [0] * (3 - len(parts[:3]))
+ *
+ *
+ *       def is_prerelease(v):
+ *           return bool(re.search(r"[-+](alpha|beta|rc|dev|pre|a\d|b\d)", str(v), re.I))
+ *
+ *
+ *       def gap_between(cur, new):
+ *           if not cur or not new:
+ *               return "unknown"
+ *           c, n = parse_version(cur), parse_version(new)
+ *           if n == c:
+ *               return "none"
+ *           if n < c:
+ *               return "ahead"
+ *           if n[0] != c[0]:
+ *               return "major"
+ *           if n[1] != c[1]:
+ *               return "minor"
+ *           return "patch"
+ *
+ *
+ *       def norm_repo(url):
+ *           """Normalise a repository field to owner/name on GitHub, else ''.
+ *
+ *           Anchors on the FIRST two path segments after the host: a tracker URL such as
+ *           github.com/numpy/numpy/issues must resolve to numpy/numpy, never numpy/issues.
+ *           """
+ *           if not isinstance(url, str):
+ *               return ""
+ *           m = re.search(
+ *               r"github\.com[:/]+([^/\s#?]+)/([^/\s#?]+?)(?:\.git)?(?:[/#?]|$)",
+ *               url.strip(),
+ *           )
+ *           if not m:
+ *               return ""
+ *           owner, name = m.group(1), m.group(2)
+ *           if owner.lower() in ("sponsors", "orgs", "apps", "settings"):
+ *               return ""
+ *           return f"{owner}/{name}"
+ *
+ *
+ *       def repo_from_urls(project_urls, *fallbacks):
+ *           """Find a source repo among PyPI project_urls.
+ *
+ *           Keys are author-supplied and their case varies ('source' for numpy,
+ *           'Source Code' for others), so match case-insensitively on a priority list
+ *           before scanning every value for any GitHub URL.
+ *           """
+ *           urls = {str(k).strip().lower(): v for k, v in (project_urls or {}).items()}
+ *           for key in ("source", "source code", "repository", "code", "github", "homepage", "home"):
+ *               found = norm_repo(urls.get(key))
+ *               if found:
+ *                   return found
+ *           for value in urls.values():                 # any GitHub URL beats nothing
+ *               found = norm_repo(value)
+ *               if found:
+ *                   return found
+ *           for value in fallbacks:
+ *               found = norm_repo(value)
+ *               if found:
+ *                   return found
+ *           return ""
+ *
+ *
+ *       def npm(name):
+ *           data, err = get_json(f"https://registry.npmjs.org/{urllib.request.quote(name, safe='@')}")
+ *           if data is None:
+ *               return None, err
+ *           latest = ((data.get("dist-tags") or {}).get("latest")) or ""
+ *           repo = (data.get("repository") or {})
+ *           repo_url = repo.get("url") if isinstance(repo, dict) else repo
+ *           return {"latest": latest, "repo": norm_repo(repo_url)}, ""
+ *
+ *
+ *       def pypi(name):
+ *           data, err = get_json(f"https://pypi.org/pypi/{urllib.request.quote(name)}/json")
+ *           if data is None:
+ *               return None, err
+ *           info = data.get("info") or {}
+ *           repo = repo_from_urls(info.get("project_urls"), info.get("home_page"))
+ *           return {"latest": info.get("version") or "", "repo": repo}, ""
+ *
+ *
+ *       def crates(name):
+ *           data, err = get_json(f"https://crates.io/api/v1/crates/{urllib.request.quote(name)}")
+ *           if data is None:
+ *               return None, err
+ *           crate = data.get("crate") or {}
+ *           repo = norm_repo(crate.get("repository"))
+ *           return {"latest": crate.get("max_stable_version") or crate.get("newest_version") or "",
+ *                   "repo": repo}, ""
+ *
+ *
+ *       FETCHERS = {"npm": npm, "pypi": pypi, "crates": crates}
+ *
+ *
+ *       # ---------------------------------------------------------------------------
+ *       # Carrier record — how dependency facts cross a step boundary.
+ *       #
+ *       # Each stage fills its own columns and passes the rest through, so the whole
+ *       # triage runs as a linear DAG wired by value edges. No stage needs a file on
+ *       # disk, and no stage needs to know how many dependencies there are.
+ *       #
+ *       #   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+ *       #   1 name        4 repo     7 direct     10 checked
+ *       #   2 current     5 gap      8 files      11 breaking
+ *       #
+ *       # Booleans are "1" / "0" when known and "" when the stage that fills them has
+ *       # not run. That third state is load-bearing: an unfilled column must read as
+ *       # UNKNOWN downstream, never as a clean bill of health.
+ *       # ---------------------------------------------------------------------------
+ *       COLS = 13
+ *
+ *
+ *       def scrub(value):
+ *           """Field text can never contain the delimiters that frame it."""
+ *           return str(value).replace(FS, " ").replace(RS, " ")
+ *
+ *
+ *       def unpack(packed):
+ *           """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+ *           rows = []
+ *           for chunk in (packed or "").split(RS):
+ *               if chunk:
+ *                   rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+ *           return rows
+ *
+ *
+ *       def repack(rows):
+ *           return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+ *
+ *
+ *       def upstream_packed(arg):
+ *           """The previous step's output, however the value edge chose to deliver it.
+ *
+ *           A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+ *           accepted, so the step does not depend on whether the edge resolves
+ *           `.stdout.text` or `.stdout.json.packed`.
+ *           """
+ *           text = (arg or "").strip()
+ *           if not text.startswith("{"):
+ *               return text
+ *           try:
+ *               doc = json.loads(text)
+ *           except json.JSONDecodeError as exc:
+ *               die(f"upstream payload will not parse as JSON: {exc}")
+ *           if not isinstance(doc, dict):
+ *               die("upstream payload is not a JSON object")
+ *           return doc.get("packed", "")
+ *
+ *
+ *       def resolve(eco, name, current):
+ *           """One dependency, one registry reading.
+ *
+ *           Never raises: a remote problem is an expected absence carried in the
+ *           payload, so one dead package cannot kill a 47-dependency report.
+ *           """
+ *           fetcher = FETCHERS.get(eco)
+ *           base = {"ok": True, "ecosystem": eco, "name": name, "current": current,
+ *                   "latest": "", "repo": "", "gap": "unknown", "outdated": False}
+ *
+ *           if not fetcher:
+ *               base["warning"] = f"unsupported ecosystem: {eco}"
+ *               return base
+ *
+ *           facts, err = fetcher(name)
+ *           if facts is None:
+ *               base["warning"] = f"{name}: {err}"
+ *               return base
+ *
+ *           latest = facts["latest"]
+ *           gap = gap_between(current, latest)
+ *           base.update({
+ *               "latest": latest,
+ *               "repo": facts["repo"],
+ *               "gap": gap,
+ *               "outdated": gap in ("major", "minor", "patch"),
+ *               "prerelease": is_prerelease(latest),
+ *           })
+ *           if not facts["repo"]:
+ *               base["warning"] = f"{name}: no GitHub source URL published; changelog unavailable"
+ *           return base
+ *
+ *
+ *       def run_batch(arg):
+ *           """Resolve every dependency the manifest step found, in one step.
+ *
+ *           Fills carrier columns 2-6 (current, latest, repo, gap, outdated) and leaves
+ *           everything else for the stages downstream.
+ *           """
+ *           rows = unpack(upstream_packed(arg))
+ *           if not rows:
+ *               emit({"ok": True, "warning": "no dependencies on input", "count": 0,
+ *                     "resolved": 0, "outdated": 0, "packed": ""})
+ *
+ *           warnings = []
+ *           for row in rows:
+ *               rec = resolve(row[0], row[1], row[2])
+ *               if rec.get("warning"):
+ *                   warnings.append(rec["warning"])
+ *               row[2] = rec["current"]
+ *               row[3] = rec["latest"]
+ *               row[4] = rec["repo"]
+ *               row[5] = rec["gap"]
+ *               row[6] = "1" if rec["outdated"] else "0"
+ *
+ *           payload = {
+ *               "ok": True,
+ *               "count": len(rows),
+ *               "resolved": len(rows) - len(warnings),
+ *               "outdated": sum(1 for row in rows if row[6] == "1"),
+ *               "packed": repack(rows),
+ *           }
+ *           if warnings:
+ *               payload["unresolved"] = len(warnings)
+ *               payload["warning"] = "; ".join(warnings[:5])
+ *           emit(payload)
+ *
+ *
+ *       def main():
+ *           if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+ *               if len(sys.argv) < 3:
+ *                   die("usage: fetch_registry.py --batch <upstream payload>")
+ *               run_batch(sys.argv[2])
+ *
+ *           if len(sys.argv) < 3:
+ *               die("usage: fetch_registry.py <ecosystem> <name> [current_version]\n"
+ *                   "   or: fetch_registry.py --batch <upstream payload>")
+ *           emit(resolve(sys.argv[1], sys.argv[2],
+ *                        sys.argv[3] if len(sys.argv) > 3 else ""))
+ *
+ *
+ *       if __name__ == "__main__":
+ *           main()
+ *     - "--batch"
+ *     - "@find_dependencies{$.stdout.text | fromjson | .packed}"
  *   locate_callsites:
  *     type: process.exec
- *     argv:
- *     - "python3"
- *     - "-c"
- *     - "import base64;exec(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGVwIDQg4oCUIGRvZXMgdGhpcyBwcm9qZWN0IGFjdHVhbGx5IGltcG9ydCB0aGUgcGFja2FnZSwgYW5kIHdoZXJlPwoKVGhpcyBpcyB0aGUgc3RlcCB0aGF0IHNlcGFyYXRlcyB0aGUgUGxheSBmcm9tIERlcGVuZGFib3QuIEEgYnJlYWtpbmcgY2hhbmdlIGluCmEgZGVwZW5kZW5jeSB5b3UgbmV2ZXIgaW1wb3J0IGRpcmVjdGx5IGlzIG5vdCB5b3VyIHByb2JsZW07IHRoZSBzYW1lIGNoYW5nZSBpbgpvbmUgeW91IGNhbGwgb24gbGluZSA0MiBpcy4KCkNvbnRyYWN0IChyb3RlIHN0ZXApOgogIE5ldmVyIGEgaGFyZCBmYXVsdCBmb3IgIm5vdCBmb3VuZCIg4oCUIGEgcGFja2FnZSB3aXRoIG5vIGNhbGwgc2l0ZXMgaXMgYSBSRUFMCiAgQU5TV0VSLCBub3QgYW4gYWJzZW5jZS4gT25seSBhIGJhZCBpbnZvY2F0aW9uIG9yIHVucmVhZGFibGUgcm9vdCBleGl0cyAyLgoKU3RhbmRhcmQgbGlicmFyeSBvbmx5LiBXYWxrcyB0aGUgdHJlZSBvbmNlIHJhdGhlciB0aGFuIHNoZWxsaW5nIG91dCwgc28gbm8KcmlwZ3JlcCBkZXBlbmRlbmN5IGxhbmRzIGluIGRlcHMudG9tbC4KIiIiCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgcmUKaW1wb3J0IHN5cwoKRlMgPSBjaHIoMzEpClJTID0gY2hyKDMwKQoKTUFYX0JZVEVTID0gMV81MDBfMDAwICAgICAgICAjIHNraXAgYW55dGhpbmcgYmlnZ2VyOyBpdCBpcyBub3QgaGFuZC13cml0dGVuIHNvdXJjZQpNQVhfSElUUyA9IDQwCgpTS0lQX0RJUlMgPSB7CiAgICAiLmdpdCIsICJub2RlX21vZHVsZXMiLCAidmVudiIsICIudmVudiIsICJfX3B5Y2FjaGVfXyIsICJ0YXJnZXQiLCAiZGlzdCIsCiAgICAiYnVpbGQiLCAiLnRveCIsICIubXlweV9jYWNoZSIsICJzaXRlLXBhY2thZ2VzIiwgIi5uZXh0IiwgInZlbmRvciIsCiAgICAiY292ZXJhZ2UiLCAiLnB5dGVzdF9jYWNoZSIsICIucnVmZl9jYWNoZSIsICJodG1sY292IiwKfQoKRVhUUyA9IHsKICAgICJucG0iOiAgICB7Ii5qcyIsICIuanN4IiwgIi50cyIsICIudHN4IiwgIi5tanMiLCAiLmNqcyIsICIuc3ZlbHRlIiwgIi52dWUifSwKICAgICJweXBpIjogICB7Ii5weSIsICIucHlpIn0sCiAgICAiY3JhdGVzIjogeyIucnMifSwKfQoKCmRlZiBkaWUobXNnKToKICAgIHByaW50KGYiZmluZF9jYWxsc2l0ZXM6IHttc2d9IiwgZmlsZT1zeXMuc3RkZXJyKQogICAgcmFpc2UgU3lzdGVtRXhpdCgyKQoKCmRlZiBlbWl0KHBheWxvYWQpOgogICAgc3lzLnN0ZG91dC53cml0ZShqc29uLmR1bXBzKHBheWxvYWQpICsgIlxuIikKICAgIHJhaXNlIFN5c3RlbUV4aXQoMCkKCgpkZWYgaW1wb3J0X2FsaWFzZXMoZWNvLCBuYW1lKToKICAgICIiIlBsYXVzaWJsZSBtb2R1bGUgbmFtZXMgZm9yIGEgZGlzdHJpYnV0aW9uIG5hbWUuCgogICAgRGlzdHJpYnV0aW9uIG5hbWUgYW5kIGltcG9ydCBuYW1lIG9mdGVuIGRpZmZlciAoUHlQSSBiZWF1dGlmdWxzb3VwNCBpbXBvcnRzCiAgICBhcyBiczQpLiBXZSBjYW5ub3QgcmVzb2x2ZSB0aGF0IGZyb20gdGhlIHJlZ2lzdHJ5IGFsb25lLCBzbyB3ZSB0cnkgdGhlCiAgICBtZWNoYW5pY2FsIHRyYW5zZm9ybXMgYW5kIHJlcG9ydCBob25lc3RseSB3aGVuIG5vdGhpbmcgbWF0Y2hlcy4KICAgICIiIgogICAgYmFzZSA9IG5hbWUuc3RyaXAoKQogICAgb3V0ID0ge2Jhc2V9CiAgICBpZiBlY28gPT0gInB5cGkiOgogICAgICAgIG91dC5hZGQoYmFzZS5yZXBsYWNlKCItIiwgIl8iKSkKICAgICAgICBvdXQuYWRkKGJhc2UucmVwbGFjZSgiLSIsICIiKSkKICAgICAgICBvdXQuYWRkKGJhc2UucmVwbGFjZSgiXyIsICItIikpCiAgICAgICAgaWYgYmFzZS5sb3dlcigpLnN0YXJ0c3dpdGgoInB5dGhvbi0iKToKICAgICAgICAgICAgb3V0LmFkZChiYXNlWzc6XS5yZXBsYWNlKCItIiwgIl8iKSkKICAgIGVsaWYgZWNvID09ICJjcmF0ZXMiOgogICAgICAgIG91dC5hZGQoYmFzZS5yZXBsYWNlKCItIiwgIl8iKSkKICAgIGVsaWYgZWNvID09ICJucG0iOgogICAgICAgIG91dC5hZGQoYmFzZSkgICAgICAgICAgICAgICAgICAgICAgICMgc2NvcGVkIG5hbWVzIGxpa2UgQHNjb3BlL3BrZyBzdGF5IHdob2xlCiAgICByZXR1cm4ge2EgZm9yIGEgaW4gb3V0IGlmIGF9CgoKZGVmIHBhdHRlcm5zX2ZvcihlY28sIGFsaWFzZXMpOgogICAgcGF0cyA9IFtdCiAgICBmb3IgYWxpYXMgaW4gYWxpYXNlczoKICAgICAgICBxID0gcmUuZXNjYXBlKGFsaWFzKQogICAgICAgIGlmIGVjbyA9PSAibnBtIjoKICAgICAgICAgICAgcGF0cy5hcHBlbmQocmUuY29tcGlsZSgKICAgICAgICAgICAgICAgIHJmIiIiKD86cmVxdWlyZVxzKlwoXHMqWyciXXtxfSg/Oi9bXiciXSopP1snIl1ccypcKSIiIgogICAgICAgICAgICAgICAgcmYiIiJ8ZnJvbVxzK1snIl17cX0oPzovW14nIl0qKT9bJyJdIiIiCiAgICAgICAgICAgICAgICByZiIiInxpbXBvcnRccypcKFxzKlsnIl17cX0oPzovW14nIl0qKT9bJyJdXHMqXCkpIiIiKSkKICAgICAgICBlbGlmIGVjbyA9PSAicHlwaSI6CiAgICAgICAgICAgICMgWyBcdF0qIG5vdCBccyog4oCUIHVuZGVyIHJlLk0sIFxzIG1hdGNoZXMgbmV3bGluZXMsIHNvIHRoZSBtYXRjaCB3b3VsZAogICAgICAgICAgICAjIHN0YXJ0IG9uIGFuIGVhcmxpZXIgYmxhbmsgbGluZSBhbmQgcmVwb3J0IHRoZSB3cm9uZyBsaW5lIG51bWJlci4KICAgICAgICAgICAgcGF0cy5hcHBlbmQocmUuY29tcGlsZSgKICAgICAgICAgICAgICAgIHJmIl5bIFx0XSooPzpmcm9tXHMre3F9KD86XC5cdyspKlxzK2ltcG9ydFxzK3xpbXBvcnRccyt7cX0oPzpcLlx3KykqKSIsCiAgICAgICAgICAgICAgICByZS5NKSkKICAgICAgICBlbGlmIGVjbyA9PSAiY3JhdGVzIjoKICAgICAgICAgICAgcGF0cy5hcHBlbmQocmUuY29tcGlsZSgKICAgICAgICAgICAgICAgIHJmIig/Ol5bIFx0XSp1c2Vccyt7cX1ccyooPzo6Onw7KXxeWyBcdF0qZXh0ZXJuXHMrY3JhdGVccyt7cX1cYikiLCByZS5NKSkKICAgIHJldHVybiBwYXRzCgoKQ09NTUVOVF9QUkVGSVhFUyA9ICgiLy8iLCAiKiIsICIvKiIsICIjIikKCgpkZWYgaXNfY29tbWVudGVkKGxpbmUpOgogICAgIiIiVHJ1ZSB3aGVuIHRoZSBtYXRjaGVkIGxpbmUgaXMgYSB3aG9sZS1saW5lIGNvbW1lbnQuCgogICAgVGhlIFB5dGhvbiBhbmQgUnVzdCBwYXR0ZXJucyBhbmNob3Igd2l0aCBeWyBcXHRdKiBzbyBhIGxlYWRpbmcgIyBvciAvLyBhbHJlYWR5CiAgICBwcmV2ZW50cyBhIG1hdGNoLiBUaGUgbnBtIHBhdHRlcm4gY2Fubm90IGFuY2hvciDigJQgcmVxdWlyZSgpIGxlZ2l0aW1hdGVseQogICAgYXBwZWFycyBtaWQtbGluZSDigJQgc28gYSBjb21tZW50ZWQtb3V0IHJlcXVpcmUgd291bGQgb3RoZXJ3aXNlIGJlIHJlcG9ydGVkIGFzCiAgICBhIGxpdmUgY2FsbCBzaXRlIGFuZCBpbmZsYXRlIHRoZSBjb3VudCB0aGlzIFBsYXkgZXhpc3RzIHRvIHNocmluay4KICAgICIiIgogICAgcmV0dXJuIGxpbmUubHN0cmlwKCkuc3RhcnRzd2l0aChDT01NRU5UX1BSRUZJWEVTKQoKCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCiMgQ2FycmllciByZWNvcmQg4oCUIGhvdyBkZXBlbmRlbmN5IGZhY3RzIGNyb3NzIGEgc3RlcCBib3VuZGFyeS4KIwojIEVhY2ggc3RhZ2UgZmlsbHMgaXRzIG93biBjb2x1bW5zIGFuZCBwYXNzZXMgdGhlIHJlc3QgdGhyb3VnaCwgc28gdGhlIHdob2xlCiMgdHJpYWdlIHJ1bnMgYXMgYSBsaW5lYXIgREFHIHdpcmVkIGJ5IHZhbHVlIGVkZ2VzLiBObyBzdGFnZSBuZWVkcyBhIGZpbGUgb24KIyBkaXNrLCBhbmQgbm8gc3RhZ2UgbmVlZHMgdG8ga25vdyBob3cgbWFueSBkZXBlbmRlbmNpZXMgdGhlcmUgYXJlLgojCiMgICAwIGVjb3N5c3RlbSAgIDMgbGF0ZXN0ICAgNiBvdXRkYXRlZCAgIDkgIGZpcnN0X3NpdGUgIDEyIG1hcmtlcnMKIyAgIDEgbmFtZSAgICAgICAgNCByZXBvICAgICA3IGRpcmVjdCAgICAgMTAgY2hlY2tlZAojICAgMiBjdXJyZW50ICAgICA1IGdhcCAgICAgIDggZmlsZXMgICAgICAxMSBicmVha2luZwojCiMgQm9vbGVhbnMgYXJlICIxIiAvICIwIiB3aGVuIGtub3duIGFuZCAiIiB3aGVuIHRoZSBzdGFnZSB0aGF0IGZpbGxzIHRoZW0gaGFzCiMgbm90IHJ1bi4gVGhhdCB0aGlyZCBzdGF0ZSBpcyBsb2FkLWJlYXJpbmc6IGFuIHVuZmlsbGVkIGNvbHVtbiBtdXN0IHJlYWQgYXMKIyBVTktOT1dOIGRvd25zdHJlYW0sIG5ldmVyIGFzIGEgY2xlYW4gYmlsbCBvZiBoZWFsdGguCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCkNPTFMgPSAxMwoKCmRlZiBzY3J1Yih2YWx1ZSk6CiAgICAiIiJGaWVsZCB0ZXh0IGNhbiBuZXZlciBjb250YWluIHRoZSBkZWxpbWl0ZXJzIHRoYXQgZnJhbWUgaXQuIiIiCiAgICByZXR1cm4gc3RyKHZhbHVlKS5yZXBsYWNlKEZTLCAiICIpLnJlcGxhY2UoUlMsICIgIikKCgpkZWYgdW5wYWNrKHBhY2tlZCk6CiAgICAiIiJDYXJyaWVyIHJvd3MsIHBhZGRlZCB0byBDT0xTLiBTaG9ydCByb3dzIGNvbWUgZnJvbSBhbiBlYXJsaWVyIHN0YWdlLiIiIgogICAgcm93cyA9IFtdCiAgICBmb3IgY2h1bmsgaW4gKHBhY2tlZCBvciAiIikuc3BsaXQoUlMpOgogICAgICAgIGlmIGNodW5rOgogICAgICAgICAgICByb3dzLmFwcGVuZCgoY2h1bmsuc3BsaXQoRlMpICsgWyIiXSAqIENPTFMpWzpDT0xTXSkKICAgIHJldHVybiByb3dzCgoKZGVmIHJlcGFjayhyb3dzKToKICAgIHJldHVybiBSUy5qb2luKEZTLmpvaW4oc2NydWIoY29sKSBmb3IgY29sIGluIHJvdykgZm9yIHJvdyBpbiByb3dzKQoKCmRlZiB1cHN0cmVhbV9wYWNrZWQoYXJnKToKICAgICIiIlRoZSBwcmV2aW91cyBzdGVwJ3Mgb3V0cHV0LCBob3dldmVyIHRoZSB2YWx1ZSBlZGdlIGNob3NlIHRvIGRlbGl2ZXIgaXQuCgogICAgQSB3aG9sZSBzdGRvdXQgcGF5bG9hZCAoYSBKU09OIG9iamVjdCkgYW5kIGEgYmFyZSBgcGFja2VkYCBzY2FsYXIgYXJlIGJvdGgKICAgIGFjY2VwdGVkLCBzbyB0aGUgc3RlcCBkb2VzIG5vdCBkZXBlbmQgb24gd2hldGhlciB0aGUgZWRnZSByZXNvbHZlcwogICAgYC5zdGRvdXQudGV4dGAgb3IgYC5zdGRvdXQuanNvbi5wYWNrZWRgLgogICAgIiIiCiAgICB0ZXh0ID0gKGFyZyBvciAiIikuc3RyaXAoKQogICAgaWYgbm90IHRleHQuc3RhcnRzd2l0aCgieyIpOgogICAgICAgIHJldHVybiB0ZXh0CiAgICB0cnk6CiAgICAgICAgZG9jID0ganNvbi5sb2Fkcyh0ZXh0KQogICAgZXhjZXB0IGpzb24uSlNPTkRlY29kZUVycm9yIGFzIGV4YzoKICAgICAgICBkaWUoZiJ1cHN0cmVhbSBwYXlsb2FkIHdpbGwgbm90IHBhcnNlIGFzIEpTT046IHtleGN9IikKICAgIGlmIG5vdCBpc2luc3RhbmNlKGRvYywgZGljdCk6CiAgICAgICAgZGllKCJ1cHN0cmVhbSBwYXlsb2FkIGlzIG5vdCBhIEpTT04gb2JqZWN0IikKICAgIHJldHVybiBkb2MuZ2V0KCJwYWNrZWQiLCAiIikKCgpkZWYgc2Nhbihyb290LCBlY28sIG5hbWUpOgogICAgIiIiV2hlcmUsIGlmIGFueXdoZXJlLCB0aGlzIHByb2plY3QgaW1wb3J0cyB0aGUgcGFja2FnZS4KCiAgICAiTm90IGZvdW5kIiBpcyBhIHJlYWwgYW5zd2VyLCBub3QgYW4gYWJzZW5jZSwgc28gdGhpcyBuZXZlciByYWlzZXM7IG9ubHkgYQogICAgYmFkIGludm9jYXRpb24gb3IgYW4gdW5yZWFkYWJsZSByb290IGlzIGEgaGFyZCBmYXVsdCwgYW5kIHRoYXQgaXMgY2hlY2tlZAogICAgb25jZSBieSB0aGUgY2FsbGVyLgogICAgIiIiCiAgICBleHRzID0gRVhUUy5nZXQoZWNvKQogICAgYmFzZSA9IHsib2siOiBUcnVlLCAiZWNvc3lzdGVtIjogZWNvLCAibmFtZSI6IG5hbWUsCiAgICAgICAgICAgICJkaXJlY3QiOiBGYWxzZSwgImhpdHMiOiAwLCAiZmlsZXMiOiAwLCAicGFja2VkIjogIiIsICJzY2FubmVkIjogMH0KICAgIGlmIG5vdCBleHRzOgogICAgICAgIGJhc2VbIndhcm5pbmciXSA9IGYibm8gc291cmNlIHBhdHRlcm4gZm9yIGVjb3N5c3RlbToge2Vjb30iCiAgICAgICAgcmV0dXJuIGJhc2UKCiAgICBhbGlhc2VzID0gaW1wb3J0X2FsaWFzZXMoZWNvLCBuYW1lKQogICAgcGF0cyA9IHBhdHRlcm5zX2ZvcihlY28sIGFsaWFzZXMpCgogICAgaGl0cywgZmlsZXNfd2l0aCwgc2Nhbm5lZCwgdW5yZWFkYWJsZSA9IFtdLCBzZXQoKSwgMCwgMAogICAgZm9yIGRpcnBhdGgsIGRpcm5hbWVzLCBmaWxlbmFtZXMgaW4gb3Mud2Fsayhyb290KToKICAgICAgICBkaXJuYW1lc1s6XSA9IFtkIGZvciBkIGluIGRpcm5hbWVzIGlmIGQgbm90IGluIFNLSVBfRElSUyBhbmQgbm90IGQuc3RhcnRzd2l0aCgiLiIpXQogICAgICAgIGZvciBmbmFtZSBpbiBmaWxlbmFtZXM6CiAgICAgICAgICAgIGlmIG9zLnBhdGguc3BsaXRleHQoZm5hbWUpWzFdIG5vdCBpbiBleHRzOgogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgZnVsbCA9IG9zLnBhdGguam9pbihkaXJwYXRoLCBmbmFtZSkKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgaWYgb3MucGF0aC5nZXRzaXplKGZ1bGwpID4gTUFYX0JZVEVTOgogICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgICAgICAgICB3aXRoIG9wZW4oZnVsbCwgZW5jb2Rpbmc9InV0Zi04IiwgZXJyb3JzPSJyZXBsYWNlIikgYXMgZmg6CiAgICAgICAgICAgICAgICAgICAgdGV4dCA9IGZoLnJlYWQoKQogICAgICAgICAgICBleGNlcHQgT1NFcnJvcjoKICAgICAgICAgICAgICAgIHVucmVhZGFibGUgKz0gMQogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAgc2Nhbm5lZCArPSAxCiAgICAgICAgICAgIGxpbmVzID0gdGV4dC5zcGxpdGxpbmVzKCkKICAgICAgICAgICAgZm9yIHBhdCBpbiBwYXRzOgogICAgICAgICAgICAgICAgZm9yIG0gaW4gcGF0LmZpbmRpdGVyKHRleHQpOgogICAgICAgICAgICAgICAgICAgIGxpbmVfbm8gPSB0ZXh0LmNvdW50KCJcbiIsIDAsIG0uc3RhcnQoKSkgKyAxCiAgICAgICAgICAgICAgICAgICAgcmF3ID0gbGluZXNbbGluZV9ubyAtIDFdIGlmIGxpbmVfbm8gPD0gbGVuKGxpbmVzKSBlbHNlICIiCiAgICAgICAgICAgICAgICAgICAgaWYgaXNfY29tbWVudGVkKHJhdyk6CiAgICAgICAgICAgICAgICAgICAgICAgIGNvbnRpbnVlICAgICAgICAgICAgICAjIGEgY29tbWVudGVkLW91dCBpbXBvcnQgaXMgbm90IGEgY2FsbCBzaXRlCiAgICAgICAgICAgICAgICAgICAgcmVsID0gb3MucGF0aC5yZWxwYXRoKGZ1bGwsIHJvb3QpCiAgICAgICAgICAgICAgICAgICAgZmlsZXNfd2l0aC5hZGQocmVsKQogICAgICAgICAgICAgICAgICAgIGlmIGxlbihoaXRzKSA8IE1BWF9ISVRTOgogICAgICAgICAgICAgICAgICAgICAgICBoaXRzLmFwcGVuZCgocmVsLCBzdHIobGluZV9ubyksIHJhdy5zdHJpcCgpWzoxNjBdKSkKICAgICAgICAgICAgICAgICAgICBicmVhayAgICAgICAgICAgICAgICAgICAgICMgb25lIGxpdmUgaGl0IHBlciBwYXR0ZXJuIHBlciBmaWxlIGlzIGVub3VnaAoKICAgIGJhc2UudXBkYXRlKHsKICAgICAgICAiZGlyZWN0IjogYm9vbChmaWxlc193aXRoKSwKICAgICAgICAiaGl0cyI6IGxlbihoaXRzKSwKICAgICAgICAiZmlsZXMiOiBsZW4oZmlsZXNfd2l0aCksCiAgICAgICAgInNjYW5uZWQiOiBzY2FubmVkLAogICAgICAgICJwYWNrZWQiOiBSUy5qb2luKEZTLmpvaW4oaCkgZm9yIGggaW4gaGl0cyksCiAgICB9KQogICAgaWYgbm90IGZpbGVzX3dpdGg6CiAgICAgICAgYmFzZVsibm90ZSJdID0gKGYie25hbWV9IGlzIG5vdCBpbXBvcnRlZCBkaXJlY3RseSBpbiB7c2Nhbm5lZH0gc2Nhbm5lZCAiCiAgICAgICAgICAgICAgICAgICAgICAgIGYic291cmNlIGZpbGVzIOKAlCBsaWtlbHkgdHJhbnNpdGl2ZSIpCiAgICBpZiB1bnJlYWRhYmxlOgogICAgICAgIGJhc2VbIndhcm5pbmciXSA9IGYie3VucmVhZGFibGV9IGZpbGUocykgY291bGQgbm90IGJlIHJlYWQiCiAgICByZXR1cm4gYmFzZQoKCmRlZiBydW5fYmF0Y2gocm9vdCwgYXJnKToKICAgICIiIlNjYW4gdGhlIHRyZWUgb25jZSBwZXIgZGVwZW5kZW5jeSwgZmlsbGluZyBjYXJyaWVyIGNvbHVtbnMgNy05LgoKICAgIGZpcnN0X3NpdGUgaXMgdGhlIHJlcHJlc2VudGF0aXZlIGNhbGwgc2l0ZSBxdW90ZWQgaW4gdGhlIGZpbmFsIHJlcG9ydDsgaXQKICAgIGlzIHRoZSByZWFzb24gYSByb3cgcmVhZHMgImJyZWFraW5nLCBhbmQgeW91IGNhbGwgaXQgaGVyZSIgcmF0aGVyIHRoYW4KICAgICJicmVha2luZywgc29tZXdoZXJlIi4KICAgICIiIgogICAgcm93cyA9IHVucGFjayh1cHN0cmVhbV9wYWNrZWQoYXJnKSkKICAgIGlmIG5vdCByb3dzOgogICAgICAgIGVtaXQoeyJvayI6IFRydWUsICJ3YXJuaW5nIjogIm5vIGRlcGVuZGVuY2llcyBvbiBpbnB1dCIsICJjb3VudCI6IDAsCiAgICAgICAgICAgICAgImRpcmVjdCI6IDAsICJzY2FubmVkIjogMCwgInBhY2tlZCI6ICIifSkKCiAgICBzY2FubmVkID0gMAogICAgZm9yIHJvdyBpbiByb3dzOgogICAgICAgIHJlYyA9IHNjYW4ocm9vdCwgcm93WzBdLCByb3dbMV0pCiAgICAgICAgc2Nhbm5lZCA9IG1heChzY2FubmVkLCByZWNbInNjYW5uZWQiXSkKICAgICAgICByb3dbN10gPSAiMSIgaWYgcmVjWyJkaXJlY3QiXSBlbHNlICIwIgogICAgICAgIHJvd1s4XSA9IHN0cihyZWNbImZpbGVzIl0pCiAgICAgICAgZmlyc3QgPSByZWNbInBhY2tlZCJdLnNwbGl0KFJTKVswXSBpZiByZWNbInBhY2tlZCJdIGVsc2UgIiIKICAgICAgICBpZiBmaXJzdDoKICAgICAgICAgICAgcGFydHMgPSBmaXJzdC5zcGxpdChGUykKICAgICAgICAgICAgcm93WzldID0gZiJ7cGFydHNbMF19OntwYXJ0c1sxXX0iIGlmIGxlbihwYXJ0cykgPiAxIGVsc2UgcGFydHNbMF0KCiAgICBlbWl0KHsKICAgICAgICAib2siOiBUcnVlLAogICAgICAgICJjb3VudCI6IGxlbihyb3dzKSwKICAgICAgICAiZGlyZWN0Ijogc3VtKDEgZm9yIHJvdyBpbiByb3dzIGlmIHJvd1s3XSA9PSAiMSIpLAogICAgICAgICJzY2FubmVkIjogc2Nhbm5lZCwKICAgICAgICAicGFja2VkIjogcmVwYWNrKHJvd3MpLAogICAgfSkKCgpkZWYgbWFpbigpOgogICAgaWYgbGVuKHN5cy5hcmd2KSA+IDEgYW5kIHN5cy5hcmd2WzFdID09ICItLWJhdGNoIjoKICAgICAgICBpZiBsZW4oc3lzLmFyZ3YpIDwgNDoKICAgICAgICAgICAgZGllKCJ1c2FnZTogZmluZF9jYWxsc2l0ZXMucHkgLS1iYXRjaCA8cm9vdD4gPHVwc3RyZWFtIHBheWxvYWQ+IikKICAgICAgICByb290ID0gc3lzLmFyZ3ZbMl0KICAgICAgICBpZiBub3Qgb3MucGF0aC5pc2Rpcihyb290KToKICAgICAgICAgICAgZGllKGYicm9vdCBpcyBub3QgYSBkaXJlY3Rvcnk6IHtyb290fSIpCiAgICAgICAgcnVuX2JhdGNoKHJvb3QsIHN5cy5hcmd2WzNdKQoKICAgIGlmIGxlbihzeXMuYXJndikgPCA0OgogICAgICAgIGRpZSgidXNhZ2U6IGZpbmRfY2FsbHNpdGVzLnB5IDxyb290PiA8ZWNvc3lzdGVtPiA8bmFtZT5cbiIKICAgICAgICAgICAgIiAgIG9yOiBmaW5kX2NhbGxzaXRlcy5weSAtLWJhdGNoIDxyb290PiA8dXBzdHJlYW0gcGF5bG9hZD4iKQogICAgcm9vdCwgZWNvLCBuYW1lID0gc3lzLmFyZ3ZbMV0sIHN5cy5hcmd2WzJdLCBzeXMuYXJndlszXQogICAgaWYgbm90IG9zLnBhdGguaXNkaXIocm9vdCk6CiAgICAgICAgZGllKGYicm9vdCBpcyBub3QgYSBkaXJlY3Rvcnk6IHtyb290fSIpCiAgICBlbWl0KHNjYW4ocm9vdCwgZWNvLCBuYW1lKSkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgbWFpbigpCg==').decode())"
- *     - "--batch"
- *     - "${root}"
- *     - "@resolve_versions.stdout.text"
+ *     timeout_ms: 90000
  *     depends_on:
  *     - resolve_versions
+ *     argv:
+ *     - python3
+ *     - -c
+ *     - |2
+ *
+ *       #!/usr/bin/env python3
+ *       """Step 4 — does this project actually import the package, and where?
+ *
+ *       This is the step that separates the Play from Dependabot. A breaking change in
+ *       a dependency you never import directly is not your problem; the same change in
+ *       one you call on line 42 is.
+ *
+ *       Contract (rote step):
+ *         Never a hard fault for "not found" — a package with no call sites is a REAL
+ *         ANSWER, not an absence. Only a bad invocation or unreadable root exits 2.
+ *
+ *       Standard library only. Walks the tree once rather than shelling out, so no
+ *       ripgrep dependency lands in deps.toml.
+ *       """
+ *       import json
+ *       import os
+ *       import re
+ *       import sys
+ *
+ *       FS = chr(31)
+ *       RS = chr(30)
+ *
+ *       MAX_BYTES = 1_500_000        # skip anything bigger; it is not hand-written source
+ *       MAX_HITS = 40
+ *
+ *       SKIP_DIRS = {
+ *           ".git", "node_modules", "venv", ".venv", "__pycache__", "target", "dist",
+ *           "build", ".tox", ".mypy_cache", "site-packages", ".next", "vendor",
+ *           "coverage", ".pytest_cache", ".ruff_cache", "htmlcov",
+ *       }
+ *
+ *       EXTS = {
+ *           "npm":    {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".svelte", ".vue"},
+ *           "pypi":   {".py", ".pyi"},
+ *           "crates": {".rs"},
+ *       }
+ *
+ *
+ *       def die(msg):
+ *           print(f"find_callsites: {msg}", file=sys.stderr)
+ *           raise SystemExit(2)
+ *
+ *
+ *       def emit(payload):
+ *           sys.stdout.write(json.dumps(payload) + "\n")
+ *           raise SystemExit(0)
+ *
+ *
+ *       def import_aliases(eco, name):
+ *           """Plausible module names for a distribution name.
+ *
+ *           Distribution name and import name often differ (PyPI beautifulsoup4 imports
+ *           as bs4). We cannot resolve that from the registry alone, so we try the
+ *           mechanical transforms and report honestly when nothing matches.
+ *           """
+ *           base = name.strip()
+ *           out = {base}
+ *           if eco == "pypi":
+ *               out.add(base.replace("-", "_"))
+ *               out.add(base.replace("-", ""))
+ *               out.add(base.replace("_", "-"))
+ *               if base.lower().startswith("python-"):
+ *                   out.add(base[7:].replace("-", "_"))
+ *           elif eco == "crates":
+ *               out.add(base.replace("-", "_"))
+ *           elif eco == "npm":
+ *               out.add(base)                       # scoped names like @scope/pkg stay whole
+ *           return {a for a in out if a}
+ *
+ *
+ *       def patterns_for(eco, aliases):
+ *           pats = []
+ *           for alias in aliases:
+ *               q = re.escape(alias)
+ *               if eco == "npm":
+ *                   pats.append(re.compile(
+ *                       rf"""(?:require\s*\(\s*['"]{q}(?:/[^'"]*)?['"]\s*\)"""
+ *                       rf"""|from\s+['"]{q}(?:/[^'"]*)?['"]"""
+ *                       rf"""|import\s*\(\s*['"]{q}(?:/[^'"]*)?['"]\s*\))"""))
+ *               elif eco == "pypi":
+ *                   # [ \t]* not \s* — under re.M, \s matches newlines, so the match would
+ *                   # start on an earlier blank line and report the wrong line number.
+ *                   pats.append(re.compile(
+ *                       rf"^[ \t]*(?:from\s+{q}(?:\.\w+)*\s+import\s+|import\s+{q}(?:\.\w+)*)",
+ *                       re.M))
+ *               elif eco == "crates":
+ *                   pats.append(re.compile(
+ *                       rf"(?:^[ \t]*use\s+{q}\s*(?:::|;)|^[ \t]*extern\s+crate\s+{q}\b)", re.M))
+ *           return pats
+ *
+ *
+ *       COMMENT_PREFIXES = ("//", "*", "/*", "#")
+ *
+ *
+ *       def is_commented(line):
+ *           """True when the matched line is a whole-line comment.
+ *
+ *           The Python and Rust patterns anchor with ^[ \\t]* so a leading # or // already
+ *           prevents a match. The npm pattern cannot anchor — require() legitimately
+ *           appears mid-line — so a commented-out require would otherwise be reported as
+ *           a live call site and inflate the count this Play exists to shrink.
+ *           """
+ *           return line.lstrip().startswith(COMMENT_PREFIXES)
+ *
+ *
+ *       # ---------------------------------------------------------------------------
+ *       # Carrier record — how dependency facts cross a step boundary.
+ *       #
+ *       # Each stage fills its own columns and passes the rest through, so the whole
+ *       # triage runs as a linear DAG wired by value edges. No stage needs a file on
+ *       # disk, and no stage needs to know how many dependencies there are.
+ *       #
+ *       #   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+ *       #   1 name        4 repo     7 direct     10 checked
+ *       #   2 current     5 gap      8 files      11 breaking
+ *       #
+ *       # Booleans are "1" / "0" when known and "" when the stage that fills them has
+ *       # not run. That third state is load-bearing: an unfilled column must read as
+ *       # UNKNOWN downstream, never as a clean bill of health.
+ *       # ---------------------------------------------------------------------------
+ *       COLS = 13
+ *
+ *
+ *       def scrub(value):
+ *           """Field text can never contain the delimiters that frame it."""
+ *           return str(value).replace(FS, " ").replace(RS, " ")
+ *
+ *
+ *       def unpack(packed):
+ *           """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+ *           rows = []
+ *           for chunk in (packed or "").split(RS):
+ *               if chunk:
+ *                   rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+ *           return rows
+ *
+ *
+ *       def repack(rows):
+ *           return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+ *
+ *
+ *       def upstream_packed(arg):
+ *           """The previous step's output, however the value edge chose to deliver it.
+ *
+ *           A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+ *           accepted, so the step does not depend on whether the edge resolves
+ *           `.stdout.text` or `.stdout.json.packed`.
+ *           """
+ *           text = (arg or "").strip()
+ *           if not text.startswith("{"):
+ *               return text
+ *           try:
+ *               doc = json.loads(text)
+ *           except json.JSONDecodeError as exc:
+ *               die(f"upstream payload will not parse as JSON: {exc}")
+ *           if not isinstance(doc, dict):
+ *               die("upstream payload is not a JSON object")
+ *           return doc.get("packed", "")
+ *
+ *
+ *       def scan(root, eco, name):
+ *           """Where, if anywhere, this project imports the package.
+ *
+ *           "Not found" is a real answer, not an absence, so this never raises; only a
+ *           bad invocation or an unreadable root is a hard fault, and that is checked
+ *           once by the caller.
+ *           """
+ *           exts = EXTS.get(eco)
+ *           base = {"ok": True, "ecosystem": eco, "name": name,
+ *                   "direct": False, "hits": 0, "files": 0, "packed": "", "scanned": 0}
+ *           if not exts:
+ *               base["warning"] = f"no source pattern for ecosystem: {eco}"
+ *               return base
+ *
+ *           aliases = import_aliases(eco, name)
+ *           pats = patterns_for(eco, aliases)
+ *
+ *           hits, files_with, scanned, unreadable = [], set(), 0, 0
+ *           for dirpath, dirnames, filenames in os.walk(root):
+ *               dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+ *               for fname in filenames:
+ *                   if os.path.splitext(fname)[1] not in exts:
+ *                       continue
+ *                   full = os.path.join(dirpath, fname)
+ *                   try:
+ *                       if os.path.getsize(full) > MAX_BYTES:
+ *                           continue
+ *                       with open(full, encoding="utf-8", errors="replace") as fh:
+ *                           text = fh.read()
+ *                   except OSError:
+ *                       unreadable += 1
+ *                       continue
+ *                   scanned += 1
+ *                   lines = text.splitlines()
+ *                   for pat in pats:
+ *                       for m in pat.finditer(text):
+ *                           line_no = text.count("\n", 0, m.start()) + 1
+ *                           raw = lines[line_no - 1] if line_no <= len(lines) else ""
+ *                           if is_commented(raw):
+ *                               continue              # a commented-out import is not a call site
+ *                           rel = os.path.relpath(full, root)
+ *                           files_with.add(rel)
+ *                           if len(hits) < MAX_HITS:
+ *                               hits.append((rel, str(line_no), raw.strip()[:160]))
+ *                           break                     # one live hit per pattern per file is enough
+ *
+ *           base.update({
+ *               "direct": bool(files_with),
+ *               "hits": len(hits),
+ *               "files": len(files_with),
+ *               "scanned": scanned,
+ *               "packed": RS.join(FS.join(h) for h in hits),
+ *           })
+ *           if not files_with:
+ *               base["note"] = (f"{name} is not imported directly in {scanned} scanned "
+ *                               f"source files — likely transitive")
+ *           if unreadable:
+ *               base["warning"] = f"{unreadable} file(s) could not be read"
+ *           return base
+ *
+ *
+ *       def run_batch(root, arg):
+ *           """Scan the tree once per dependency, filling carrier columns 7-9.
+ *
+ *           first_site is the representative call site quoted in the final report; it
+ *           is the reason a row reads "breaking, and you call it here" rather than
+ *           "breaking, somewhere".
+ *           """
+ *           rows = unpack(upstream_packed(arg))
+ *           if not rows:
+ *               emit({"ok": True, "warning": "no dependencies on input", "count": 0,
+ *                     "direct": 0, "scanned": 0, "packed": ""})
+ *
+ *           scanned = 0
+ *           for row in rows:
+ *               rec = scan(root, row[0], row[1])
+ *               scanned = max(scanned, rec["scanned"])
+ *               row[7] = "1" if rec["direct"] else "0"
+ *               row[8] = str(rec["files"])
+ *               first = rec["packed"].split(RS)[0] if rec["packed"] else ""
+ *               if first:
+ *                   parts = first.split(FS)
+ *                   row[9] = f"{parts[0]}:{parts[1]}" if len(parts) > 1 else parts[0]
+ *
+ *           emit({
+ *               "ok": True,
+ *               "count": len(rows),
+ *               "direct": sum(1 for row in rows if row[7] == "1"),
+ *               "scanned": scanned,
+ *               "packed": repack(rows),
+ *           })
+ *
+ *
+ *       def main():
+ *           if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+ *               if len(sys.argv) < 4:
+ *                   die("usage: find_callsites.py --batch <root> <upstream payload>")
+ *               root = sys.argv[2]
+ *               if not os.path.isdir(root):
+ *                   die(f"root is not a directory: {root}")
+ *               run_batch(root, sys.argv[3])
+ *
+ *           if len(sys.argv) < 4:
+ *               die("usage: find_callsites.py <root> <ecosystem> <name>\n"
+ *                   "   or: find_callsites.py --batch <root> <upstream payload>")
+ *           root, eco, name = sys.argv[1], sys.argv[2], sys.argv[3]
+ *           if not os.path.isdir(root):
+ *               die(f"root is not a directory: {root}")
+ *           emit(scan(root, eco, name))
+ *
+ *
+ *       if __name__ == "__main__":
+ *           main()
+ *     - "--batch"
+ *     - "$root"
+ *     - "@resolve_versions{$.stdout.text | fromjson | .packed}"
  *   read_changelogs:
  *     type: process.exec
- *     argv:
- *     - "python3"
- *     - "-c"
- *     - "import base64;exec(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGVwIDMg4oCUIHJlYWQgcmVsZWFzZSBub3RlcyBiZXR3ZWVuIHR3byB2ZXJzaW9ucyBhbmQganVkZ2UgdGhlbSBicmVha2luZy4KCkNvbnRyYWN0IChyb3RlIHN0ZXApOgogIEV2ZXJ5IHJlbW90ZSBwcm9ibGVtIGlzIGFuIEVYUEVDVEVEIEFCU0VOQ0UgLT4gb2s6dHJ1ZSwgZXhpdCAwLgoKICBUaGUgaG9uZXN0eSBydWxlIHRoYXQgbWF0dGVycyBtb3N0IGhlcmU6IHdoZW4gd2UgY2Fubm90IHJlYWQgdGhlIG5vdGVzLCB0aGUKICBhbnN3ZXIgaXMgInVua25vd24iLCBuZXZlciAibm8gYnJlYWtpbmcgY2hhbmdlcyIuIEEgZmFsc2UgbmVnYXRpdmUgaGVyZSB0ZWxscwogIHNvbWVvbmUgYW4gdXBncmFkZSBpcyBzYWZlIHdoZW4gbm9ib2R5IGNoZWNrZWQuIGBicmVha2luZ2AgaXMgb25seSBmYWxzZSB3aGVuCiAgbm90ZXMgd2VyZSBhY3R1YWxseSByZWFkIGFuZCBjb250YWluZWQgbm8gYnJlYWtpbmcgbWFya2VyczsgYGNoZWNrZWRgIHNheXMKICB3aGljaCBvZiB0aG9zZSB0d28gc2l0dWF0aW9ucyB5b3UgYXJlIGluLgoKR0lUSFVCX0FQSV9CQVNFIG92ZXJyaWRlcyB0aGUgQVBJIHJvb3QgKGRlZmF1bHQgaHR0cHM6Ly9hcGkuZ2l0aHViLmNvbSkgZm9yCkdpdEh1YiBFbnRlcnByaXNlIGluc3RhbGxzIGFuZCBmb3IgaGVybWV0aWMgdGVzdHMgb2YgdGhlIHN1Y2Nlc3MgcGF0aC4KClJhdGUgbGltaXQ6IHRoZSBHaXRIdWIgUkVTVCBBUEkgYWxsb3dzIDYwIHVuYXV0aGVudGljYXRlZCByZXF1ZXN0cyBwZXIgaG91ciwKYW5kIGEgNDctZGVwZW5kZW5jeSBwcm9qZWN0IGJsb3dzIHRocm91Z2ggdGhhdC4gU2V0IEdJVEhVQl9UT0tFTiB0byByYWlzZSBpdCB0bwo1MDAwL2hyLiBUaGUgdG9rZW4gaXMgb3B0aW9uYWwgYnkgZGVzaWduIHNvIHRoZSBQbGF5IHN0aWxsIHJ1bnMgd2l0aCBubwpjcmVkZW50aWFscyBhdCBhbGwgLS0gaXQgc2ltcGx5IHJlcG9ydHMgbW9yZSAidW5rbm93biIgcm93cyB3aXRob3V0IG9uZS4KIiIiCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgcmUKaW1wb3J0IHN5cwppbXBvcnQgdXJsbGliLmVycm9yCmltcG9ydCB1cmxsaWIucGFyc2UKaW1wb3J0IHVybGxpYi5yZXF1ZXN0CgpGUyA9IGNocigzMSkKUlMgPSBjaHIoMzApClVBID0gInVwZ3JhZGUtaW1wYWN0LXRyaWFnZS8wLjEgKCtodHRwczovL3BsYXkubW9kaXFvLmFpKSIKVElNRU9VVCA9IDI1CgoKZGVmIGFwaV9iYXNlKCk6CiAgICAiIiJSZWFkIGF0IGNhbGwgdGltZSwgbm90IGltcG9ydCB0aW1lLCBzbyB0ZXN0cyBjYW4gcG9pbnQgaXQgYXQgYSBzdHViLiIiIgogICAgcmV0dXJuIChvcy5lbnZpcm9uLmdldCgiR0lUSFVCX0FQSV9CQVNFIiwgIiIpLnN0cmlwKCkKICAgICAgICAgICAgb3IgImh0dHBzOi8vYXBpLmdpdGh1Yi5jb20iKS5yc3RyaXAoIi8iKQoKQlJFQUtJTkdfUEFUVEVSTlMgPSBbCiAgICAocmUuY29tcGlsZShyIlxiQlJFQUtJTkdbIC1dQ0hBTkdFUz9cYiIsIHJlLkkpLCAiYnJlYWtpbmctY2hhbmdlIiksCiAgICAocmUuY29tcGlsZShyIl5bIFx0XSojezEsNH1bIFx0XSpicmVha2luZ1xiIiwgcmUuSSB8IHJlLk0pLCAiYnJlYWtpbmctaGVhZGluZyIpLAogICAgKHJlLmNvbXBpbGUociJcYmJhY2t3YXJkcz9bLSBdaW5jb21wYXRpYmxlXGIiLCByZS5JKSwgImluY29tcGF0aWJsZSIpLAogICAgKHJlLmNvbXBpbGUociJeWyBcdF0qWy0qXVsgXHRdKlwqezAsMn0ocmVtb3ZlZD98ZHJvcHBlZD8pXCp7MCwyfVxzKyIsIHJlLkkgfCByZS5NKSwgInJlbW92YWwiKSwKICAgIChyZS5jb21waWxlKHIiXGJyZW5hbWVkP1xiLnswLDQwfVxidG9cYiIsIHJlLkkpLCAicmVuYW1lIiksCiAgICAocmUuY29tcGlsZShyIlxibm8gbG9uZ2VyXGIiLCByZS5JKSwgIm5vLWxvbmdlciIpLAogICAgKHJlLmNvbXBpbGUociJcYm1pZ3JhdGlvbiBndWlkZVxiIiwgcmUuSSksICJtaWdyYXRpb24tZ3VpZGUiKSwKXQoKCiMgR2l0SHViJ3MgYHByZXJlbGVhc2VgIGZsYWcgaXMgYXV0aG9yLXNldCBhbmQgb2Z0ZW4gbGVmdCBmYWxzZSBvbiByYyB0YWdzLAojIHNvIHRoZSB0YWcgaXRzZWxmIGlzIHRoZSBtb3JlIHJlbGlhYmxlIHNpZ25hbC4gUmVxdWlyZXMgZGlnaXRzIGFyb3VuZCB0aGUKIyBtYXJrZXIgc28gInYxLjIuMy1hYmMiIGlzIG5vdCByZWFkIGFzIGFuIGFscGhhLgpQUkVSRUxFQVNFX1RBRyA9IHJlLmNvbXBpbGUoCiAgICByIlxkKD86Wy0uX10/KD86cmN8YWxwaGF8YmV0YXxkZXZ8cHJlKVxkKnwoPzphfGJ8cmMpXGQrKVxiIiwgcmUuSSkKCgpkZWYgaXNfcHJlcmVsZWFzZShyZWwpOgogICAgcmV0dXJuIGJvb2wocmVsLmdldCgicHJlcmVsZWFzZSIpCiAgICAgICAgICAgICAgICBvciBQUkVSRUxFQVNFX1RBRy5zZWFyY2goc3RyKHJlbC5nZXQoInRhZ19uYW1lIikgb3IgIiIpKSkKCgpkZWYgZmlyc3RfbGluZSh0ZXh0LCBwb3MpOgogICAgIiIiVGhlIGZpcnN0IG5vbi1ibGFuayBsaW5lIGF0IG9yIGFmdGVyIGBwb3NgLgoKICAgIEEgbWF0Y2ggY2FuIGJlZ2luIG9uIGEgYmxhbmsgbGluZSwgc28gdGhlIHRleHQgYXQgYHBvc2AgaXMgbm90IGFsd2F5cyB0aGUKICAgIGxpbmUgd29ydGggcXVvdGluZy4gTmV2ZXIgcmV0dXJuIGFuIGVtcHR5IHNhbXBsZS4KICAgICIiIgogICAgZm9yIGxpbmUgaW4gdGV4dFtwb3M6cG9zICsgNDAwXS5zcGxpdGxpbmVzKCk6CiAgICAgICAgaWYgbGluZS5zdHJpcCgpOgogICAgICAgICAgICByZXR1cm4gbGluZS5zdHJpcCgpCiAgICByZXR1cm4gIiIKCgpkZWYgZGllKG1zZyk6CiAgICBwcmludChmImZldGNoX2NoYW5nZWxvZzoge21zZ30iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICByYWlzZSBTeXN0ZW1FeGl0KDIpCgoKZGVmIGVtaXQocGF5bG9hZCk6CiAgICBzeXMuc3Rkb3V0LndyaXRlKGpzb24uZHVtcHMocGF5bG9hZCkgKyAiXG4iKQogICAgcmFpc2UgU3lzdGVtRXhpdCgwKQoKCmRlZiBwYXJzZV92ZXJzaW9uKHYpOgogICAgcGFydHMgPSByZS5maW5kYWxsKHIiXGQrIiwgc3RyKHYpIG9yICIiKQogICAgcmV0dXJuIHR1cGxlKGludChwKSBmb3IgcCBpbiBwYXJ0c1s6M10pICsgKDAsKSAqICgzIC0gbGVuKHBhcnRzWzozXSkpCgoKZGVmIHRhZ192ZXJzaW9uKHRhZyk6CiAgICAiIiJQdWxsIGEgdmVyc2lvbiB0dXBsZSBvdXQgb2YgYSByZWxlYXNlIHRhZyBzdWNoIGFzIHYxLjIuMyBvciByZWwtMS4yLjMuIiIiCiAgICBtID0gcmUuc2VhcmNoKHIiKFxkKyg/OlwuXGQrKXswLDJ9KSIsIHN0cih0YWcpIG9yICIiKQogICAgcmV0dXJuIHBhcnNlX3ZlcnNpb24obS5ncm91cCgxKSkgaWYgbSBlbHNlIE5vbmUKCgpkZWYgZ2V0X2pzb24odXJsKToKICAgICIiIlJldHVybiAoZGF0YSwgZXJyb3IsIHJhdGVfbGltaXRlZCkuIiIiCiAgICBoZWFkZXJzID0geyJVc2VyLUFnZW50IjogVUEsICJBY2NlcHQiOiAiYXBwbGljYXRpb24vdm5kLmdpdGh1Yitqc29uIn0KICAgIHRva2VuID0gb3MuZW52aXJvbi5nZXQoIkdJVEhVQl9UT0tFTiIsICIiKS5zdHJpcCgpCiAgICBpZiB0b2tlbjoKICAgICAgICBoZWFkZXJzWyJBdXRob3JpemF0aW9uIl0gPSBmIkJlYXJlciB7dG9rZW59IgogICAgcmVxID0gdXJsbGliLnJlcXVlc3QuUmVxdWVzdCh1cmwsIGhlYWRlcnM9aGVhZGVycykKICAgIHRyeToKICAgICAgICB3aXRoIHVybGxpYi5yZXF1ZXN0LnVybG9wZW4ocmVxLCB0aW1lb3V0PVRJTUVPVVQpIGFzIHJlc3A6CiAgICAgICAgICAgIHJldHVybiBqc29uLmxvYWRzKHJlc3AucmVhZCgpLmRlY29kZSgidXRmLTgiKSksICIiLCBGYWxzZQogICAgZXhjZXB0IHVybGxpYi5lcnJvci5IVFRQRXJyb3IgYXMgZXhjOgogICAgICAgIHJlbWFpbmluZyA9IGV4Yy5oZWFkZXJzLmdldCgiWC1SYXRlTGltaXQtUmVtYWluaW5nIikgaWYgZXhjLmhlYWRlcnMgZWxzZSBOb25lCiAgICAgICAgaWYgZXhjLmNvZGUgaW4gKDQwMywgNDI5KSBhbmQgcmVtYWluaW5nID09ICIwIjoKICAgICAgICAgICAgcmV0dXJuIE5vbmUsICJHaXRIdWIgQVBJIHJhdGUgbGltaXQgcmVhY2hlZCAoc2V0IEdJVEhVQl9UT0tFTiB0byByYWlzZSBpdCkiLCBUcnVlCiAgICAgICAgaWYgZXhjLmNvZGUgPT0gNDA0OgogICAgICAgICAgICByZXR1cm4gTm9uZSwgIm5vIHJlbGVhc2VzIHB1Ymxpc2hlZCBmb3IgdGhpcyByZXBvc2l0b3J5IiwgRmFsc2UKICAgICAgICByZXR1cm4gTm9uZSwgZiJIVFRQIHtleGMuY29kZX0iLCBGYWxzZQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIyBub3FhOiBCTEUwMDEKICAgICAgICByZXR1cm4gTm9uZSwgc3RyKGV4YyksIEZhbHNlCgoKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KIyBDYXJyaWVyIHJlY29yZCDigJQgaG93IGRlcGVuZGVuY3kgZmFjdHMgY3Jvc3MgYSBzdGVwIGJvdW5kYXJ5LgojCiMgRWFjaCBzdGFnZSBmaWxscyBpdHMgb3duIGNvbHVtbnMgYW5kIHBhc3NlcyB0aGUgcmVzdCB0aHJvdWdoLCBzbyB0aGUgd2hvbGUKIyB0cmlhZ2UgcnVucyBhcyBhIGxpbmVhciBEQUcgd2lyZWQgYnkgdmFsdWUgZWRnZXMuIE5vIHN0YWdlIG5lZWRzIGEgZmlsZSBvbgojIGRpc2ssIGFuZCBubyBzdGFnZSBuZWVkcyB0byBrbm93IGhvdyBtYW55IGRlcGVuZGVuY2llcyB0aGVyZSBhcmUuCiMKIyAgIDAgZWNvc3lzdGVtICAgMyBsYXRlc3QgICA2IG91dGRhdGVkICAgOSAgZmlyc3Rfc2l0ZSAgMTIgbWFya2VycwojICAgMSBuYW1lICAgICAgICA0IHJlcG8gICAgIDcgZGlyZWN0ICAgICAxMCBjaGVja2VkCiMgICAyIGN1cnJlbnQgICAgIDUgZ2FwICAgICAgOCBmaWxlcyAgICAgIDExIGJyZWFraW5nCiMKIyBCb29sZWFucyBhcmUgIjEiIC8gIjAiIHdoZW4ga25vd24gYW5kICIiIHdoZW4gdGhlIHN0YWdlIHRoYXQgZmlsbHMgdGhlbSBoYXMKIyBub3QgcnVuLiBUaGF0IHRoaXJkIHN0YXRlIGlzIGxvYWQtYmVhcmluZzogYW4gdW5maWxsZWQgY29sdW1uIG11c3QgcmVhZCBhcwojIFVOS05PV04gZG93bnN0cmVhbSwgbmV2ZXIgYXMgYSBjbGVhbiBiaWxsIG9mIGhlYWx0aC4KIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KQ09MUyA9IDEzCgoKZGVmIHNjcnViKHZhbHVlKToKICAgICIiIkZpZWxkIHRleHQgY2FuIG5ldmVyIGNvbnRhaW4gdGhlIGRlbGltaXRlcnMgdGhhdCBmcmFtZSBpdC4iIiIKICAgIHJldHVybiBzdHIodmFsdWUpLnJlcGxhY2UoRlMsICIgIikucmVwbGFjZShSUywgIiAiKQoKCmRlZiB1bnBhY2socGFja2VkKToKICAgICIiIkNhcnJpZXIgcm93cywgcGFkZGVkIHRvIENPTFMuIFNob3J0IHJvd3MgY29tZSBmcm9tIGFuIGVhcmxpZXIgc3RhZ2UuIiIiCiAgICByb3dzID0gW10KICAgIGZvciBjaHVuayBpbiAocGFja2VkIG9yICIiKS5zcGxpdChSUyk6CiAgICAgICAgaWYgY2h1bms6CiAgICAgICAgICAgIHJvd3MuYXBwZW5kKChjaHVuay5zcGxpdChGUykgKyBbIiJdICogQ09MUylbOkNPTFNdKQogICAgcmV0dXJuIHJvd3MKCgpkZWYgcmVwYWNrKHJvd3MpOgogICAgcmV0dXJuIFJTLmpvaW4oRlMuam9pbihzY3J1Yihjb2wpIGZvciBjb2wgaW4gcm93KSBmb3Igcm93IGluIHJvd3MpCgoKZGVmIHVwc3RyZWFtX3BhY2tlZChhcmcpOgogICAgIiIiVGhlIHByZXZpb3VzIHN0ZXAncyBvdXRwdXQsIGhvd2V2ZXIgdGhlIHZhbHVlIGVkZ2UgY2hvc2UgdG8gZGVsaXZlciBpdC4KCiAgICBBIHdob2xlIHN0ZG91dCBwYXlsb2FkIChhIEpTT04gb2JqZWN0KSBhbmQgYSBiYXJlIGBwYWNrZWRgIHNjYWxhciBhcmUgYm90aAogICAgYWNjZXB0ZWQsIHNvIHRoZSBzdGVwIGRvZXMgbm90IGRlcGVuZCBvbiB3aGV0aGVyIHRoZSBlZGdlIHJlc29sdmVzCiAgICBgLnN0ZG91dC50ZXh0YCBvciBgLnN0ZG91dC5qc29uLnBhY2tlZGAuCiAgICAiIiIKICAgIHRleHQgPSAoYXJnIG9yICIiKS5zdHJpcCgpCiAgICBpZiBub3QgdGV4dC5zdGFydHN3aXRoKCJ7Iik6CiAgICAgICAgcmV0dXJuIHRleHQKICAgIHRyeToKICAgICAgICBkb2MgPSBqc29uLmxvYWRzKHRleHQpCiAgICBleGNlcHQganNvbi5KU09ORGVjb2RlRXJyb3IgYXMgZXhjOgogICAgICAgIGRpZShmInVwc3RyZWFtIHBheWxvYWQgd2lsbCBub3QgcGFyc2UgYXMgSlNPTjoge2V4Y30iKQogICAgaWYgbm90IGlzaW5zdGFuY2UoZG9jLCBkaWN0KToKICAgICAgICBkaWUoInVwc3RyZWFtIHBheWxvYWQgaXMgbm90IGEgSlNPTiBvYmplY3QiKQogICAgcmV0dXJuIGRvYy5nZXQoInBhY2tlZCIsICIiKQoKCmRlZiByZWFkX25vdGVzKHJlcG8sIGN1cnJlbnQsIGxhdGVzdCk6CiAgICAiIiJSZWFkIHRoZSByZWxlYXNlIG5vdGVzIGJldHdlZW4gdHdvIHZlcnNpb25zIGFuZCBqdWRnZSB0aGVtIGJyZWFraW5nLgoKICAgIE5ldmVyIHJhaXNlczogZXZlcnkgcmVtb3RlIHByb2JsZW0gaXMgYW4gZXhwZWN0ZWQgYWJzZW5jZS4gV2hlbiB0aGUgbm90ZXMKICAgIGNhbm5vdCBiZSByZWFkIHRoZSBhbnN3ZXIgaXMgYGNoZWNrZWQ6IGZhbHNlYCDigJQgInVua25vd24iIOKAlCBhbmQgbmV2ZXIKICAgIGBicmVha2luZzogZmFsc2VgLgogICAgIiIiCiAgICBiYXNlID0gewogICAgICAgICJvayI6IFRydWUsICJyZXBvIjogcmVwbywgImN1cnJlbnQiOiBjdXJyZW50LCAibGF0ZXN0IjogbGF0ZXN0LAogICAgICAgICJjaGVja2VkIjogRmFsc2UsICAgICAgICAgICMgd2VyZSByZWxlYXNlIG5vdGVzIGFjdHVhbGx5IHJlYWQ/CiAgICAgICAgImJyZWFraW5nIjogRmFsc2UsICAgICAgICAgIyBvbmx5IG1lYW5pbmdmdWwgd2hlbiBjaGVja2VkIGlzIHRydWUKICAgICAgICAicmVsZWFzZXMiOiAwLCAibWFya2VycyI6ICIiLCAicGFja2VkIjogIiIsCiAgICB9CgogICAgY3VyX3YsIG5ld192ID0gcGFyc2VfdmVyc2lvbihjdXJyZW50KSwgcGFyc2VfdmVyc2lvbihsYXRlc3QpCgogICAgaWYgbm90IHJlcG8gb3IgIi8iIG5vdCBpbiByZXBvOgogICAgICAgIGJhc2VbIndhcm5pbmciXSA9ICJubyBHaXRIdWIgcmVwb3NpdG9yeSBrbm93bjsgY2Fubm90IHJlYWQgcmVsZWFzZSBub3RlcyIKICAgICAgICBpZiBuZXdfdlswXSA+IGN1cl92WzBdOgogICAgICAgICAgICBiYXNlWyJtYXJrZXJzIl0gPSAibWFqb3ItdmVyc2lvbi1idW1wIgogICAgICAgICAgICBiYXNlWyJub3RlIl0gPSAidW5yZWFkIG5vdGVzLCBidXQgYSBtYWpvciB2ZXJzaW9uIGJ1bXAgaW1wbGllcyBicmVha2luZyBjaGFuZ2VzIgogICAgICAgIHJldHVybiBiYXNlCgogICAgZGF0YSwgZXJyLCBsaW1pdGVkID0gZ2V0X2pzb24oCiAgICAgICAgZiJ7YXBpX2Jhc2UoKX0vcmVwb3Mve3VybGxpYi5wYXJzZS5xdW90ZShyZXBvKX0vcmVsZWFzZXM/cGVyX3BhZ2U9MTAwIikKICAgIGlmIGRhdGEgaXMgTm9uZToKICAgICAgICBiYXNlWyJ3YXJuaW5nIl0gPSBmIntyZXBvfToge2Vycn0iCiAgICAgICAgYmFzZVsicmF0ZV9saW1pdGVkIl0gPSBsaW1pdGVkCiAgICAgICAgIyBNYWpvciBidW1wcyBhcmUgYnJlYWtpbmcgYnkgc2VtdmVyIGNvbnZlbnRpb24gZXZlbiB3aGVuIG5vdGVzIGFyZSB1bnJlYWRhYmxlLgogICAgICAgIGlmIG5ld192WzBdID4gY3VyX3ZbMF06CiAgICAgICAgICAgIGJhc2VbIm1hcmtlcnMiXSA9ICJtYWpvci12ZXJzaW9uLWJ1bXAiCiAgICAgICAgICAgIGJhc2VbIm5vdGUiXSA9ICJ1bnJlYWQgbm90ZXMsIGJ1dCBhIG1ham9yIHZlcnNpb24gYnVtcCBpbXBsaWVzIGJyZWFraW5nIGNoYW5nZXMiCiAgICAgICAgcmV0dXJuIGJhc2UKCiAgICBjYW5kaWRhdGVzID0gW10KICAgIGZvciByZWwgaW4gZGF0YToKICAgICAgICBpZiByZWwuZ2V0KCJkcmFmdCIpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHR2ID0gdGFnX3ZlcnNpb24ocmVsLmdldCgidGFnX25hbWUiKSkKICAgICAgICBpZiB0diBpcyBOb25lIG9yIG5vdCAoY3VyX3YgPCB0diA8PSBuZXdfdik6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgY2FuZGlkYXRlcy5hcHBlbmQocmVsKQoKICAgICMgQSByZWxlYXNlIGNhbmRpZGF0ZSdzIG5vdGVzIGFyZSBzdXBlcnNlZGVkIGJ5IHRoZSBmaW5hbCByZWxlYXNlJ3MsIHNvCiAgICAjIGNvdW50aW5nIGJvdGggcmVwb3J0cyBldmVyeSBmaW5kaW5nIHR3aWNlICh2Mi40LjAgYW5kIHYyLjQuMHJjMSB3aXRoCiAgICAjIGlkZW50aWNhbCB0ZXh0KS4gRHJvcCBwcmVyZWxlYXNlcyAtLSB1bmxlc3MgdGhleSBhcmUgYWxsIHRoZXJlIGlzLCBpbgogICAgIyB3aGljaCBjYXNlIHRoZXkgYXJlIHRoZSBvbmx5IGV2aWRlbmNlIGF2YWlsYWJsZSBhbmQgZHJvcHBpbmcgdGhlbSB3b3VsZAogICAgIyB0dXJuIGEgcmVhbCBmaW5kaW5nIGludG8gYSBmYWxzZSAibm90aGluZyB0byByZWFkIi4KICAgIHN0YWJsZSA9IFtyZWwgZm9yIHJlbCBpbiBjYW5kaWRhdGVzIGlmIG5vdCBpc19wcmVyZWxlYXNlKHJlbCldCiAgICBpbl9yYW5nZSA9IHN0YWJsZSBvciBjYW5kaWRhdGVzCgogICAgbWFya2Vycywgc2FtcGxlcyA9IHNldCgpLCBbXQogICAgZm9yIHJlbCBpbiBpbl9yYW5nZToKICAgICAgICBib2R5ID0gcmVsLmdldCgiYm9keSIpIG9yICIiCiAgICAgICAgZm9yIHBhdCwgbGFiZWwgaW4gQlJFQUtJTkdfUEFUVEVSTlM6CiAgICAgICAgICAgIG0gPSBwYXQuc2VhcmNoKGJvZHkpCiAgICAgICAgICAgIGlmIG06CiAgICAgICAgICAgICAgICBtYXJrZXJzLmFkZChsYWJlbCkKICAgICAgICAgICAgICAgIGxpbmUgPSBmaXJzdF9saW5lKGJvZHksIG0uc3RhcnQoKSkKICAgICAgICAgICAgICAgIGlmIGxpbmUgYW5kIGxlbihzYW1wbGVzKSA8IDEyOgogICAgICAgICAgICAgICAgICAgIHNhbXBsZXMuYXBwZW5kKChzdHIocmVsLmdldCgidGFnX25hbWUiKSBvciAiPyIpLCBsYWJlbCwgbGluZVs6MTUwXSkpCgogICAgYmFzZS51cGRhdGUoewogICAgICAgICJjaGVja2VkIjogVHJ1ZSwKICAgICAgICAicmVsZWFzZXMiOiBsZW4oaW5fcmFuZ2UpLAogICAgICAgICJicmVha2luZyI6IGJvb2wobWFya2VycyksCiAgICAgICAgIm1hcmtlcnMiOiAiLCIuam9pbihzb3J0ZWQobWFya2VycykpLAogICAgICAgICJwYWNrZWQiOiBSUy5qb2luKEZTLmpvaW4ocykgZm9yIHMgaW4gc2FtcGxlcyksCiAgICB9KQoKICAgIGlmIG5vdCBpbl9yYW5nZToKICAgICAgICBiYXNlWyJjaGVja2VkIl0gPSBGYWxzZQogICAgICAgIGJhc2VbIndhcm5pbmciXSA9IChmIntyZXBvfTogbm8gcmVsZWFzZXMgZm91bmQgYmV0d2VlbiB7Y3VycmVudH0gYW5kIHtsYXRlc3R9ICIKICAgICAgICAgICAgICAgICAgICAgICAgICAgZiIocHJvamVjdCBtYXkgdXNlIHRhZ3Mgb3IgYSBDSEFOR0VMT0cgZmlsZSBpbnN0ZWFkKSIpCiAgICAgICAgaWYgbmV3X3ZbMF0gPiBjdXJfdlswXToKICAgICAgICAgICAgYmFzZVsibWFya2VycyJdID0gIm1ham9yLXZlcnNpb24tYnVtcCIKICAgIGVsaWYgbmV3X3ZbMF0gPiBjdXJfdlswXSBhbmQgbm90IG1hcmtlcnM6CiAgICAgICAgYmFzZVsiYnJlYWtpbmciXSA9IFRydWUKICAgICAgICBiYXNlWyJtYXJrZXJzIl0gPSAibWFqb3ItdmVyc2lvbi1idW1wIgogICAgICAgIGJhc2VbIm5vdGUiXSA9ICJubyBicmVha2luZyB3b3JkaW5nIGluIG5vdGVzLCBidXQgdGhlIG1ham9yIHZlcnNpb24gY2hhbmdlZCIKCiAgICByZXR1cm4gYmFzZQoKCmRlZiBydW5fYmF0Y2goYXJnKToKICAgICIiIlJlYWQgbm90ZXMgZm9yIGV2ZXJ5IG91dGRhdGVkIGRlcGVuZGVuY3ksIGZpbGxpbmcgY2FycmllciBjb2x1bW5zIDEwLTEyLgoKICAgIERlcGVuZGVuY2llcyBhbHJlYWR5IGF0IHRoZSBsYXRlc3QgdmVyc2lvbiBhcmUgc2tpcHBlZDogdGhlaXIgY29sdW1ucyBzdGF5CiAgICBlbXB0eSwgd2hpY2ggZG93bnN0cmVhbSByZWFkcyBhcyBDVVJSRU5UIHJhdGhlciB0aGFuIGFzIGEgdmVyZGljdC4gTm90aGluZwogICAgaGVyZSBjYW4gdHVybiBhbiB1bnJlYWQgY2hhbmdlbG9nIGludG8gYSBjbGVhbiBvbmUg4oCUIGEgcmF0ZS1saW1pdGVkIHJ1bgogICAgbGVhdmVzIGBjaGVja2VkYCBhdCAiMCIgYW5kIHByb2R1Y2VzIG1vcmUgUkVWSUVXIHJvd3MsIG5ldmVyIGZld2VyIEFDVCByb3dzLgogICAgIiIiCiAgICByb3dzID0gdW5wYWNrKHVwc3RyZWFtX3BhY2tlZChhcmcpKQogICAgaWYgbm90IHJvd3M6CiAgICAgICAgZW1pdCh7Im9rIjogVHJ1ZSwgIndhcm5pbmciOiAibm8gZGVwZW5kZW5jaWVzIG9uIGlucHV0IiwgImNvdW50IjogMCwKICAgICAgICAgICAgICAiY2hlY2tlZCI6IDAsICJicmVha2luZyI6IDAsICJwYWNrZWQiOiAiIn0pCgogICAgY2hlY2tlZCA9IGJyZWFraW5nID0gbGltaXRlZCA9IHNraXBwZWQgPSAwCiAgICB3YXJuaW5ncyA9IFtdCiAgICBmb3Igcm93IGluIHJvd3M6CiAgICAgICAgaWYgcm93WzZdICE9ICIxIjogICAgICAgICAgICAgICAgICAgICAjIG5vdCBvdXRkYXRlZDsgbm90aGluZyB0byBjb21wYXJlCiAgICAgICAgICAgIHNraXBwZWQgKz0gMQogICAgICAgICAgICBjb250aW51ZQogICAgICAgIHJlYyA9IHJlYWRfbm90ZXMocm93WzRdLCByb3dbMl0sIHJvd1szXSkKICAgICAgICBpZiByZWMuZ2V0KCJyYXRlX2xpbWl0ZWQiKToKICAgICAgICAgICAgbGltaXRlZCArPSAxCiAgICAgICAgZWxpZiByZWMuZ2V0KCJ3YXJuaW5nIik6CiAgICAgICAgICAgIHdhcm5pbmdzLmFwcGVuZChyZWNbIndhcm5pbmciXSkKICAgICAgICByb3dbMTBdID0gIjEiIGlmIHJlY1siY2hlY2tlZCJdIGVsc2UgIjAiCiAgICAgICAgcm93WzExXSA9ICIxIiBpZiByZWNbImJyZWFraW5nIl0gZWxzZSAiMCIKICAgICAgICByb3dbMTJdID0gcmVjWyJtYXJrZXJzIl0KICAgICAgICBjaGVja2VkICs9IGJvb2wocmVjWyJjaGVja2VkIl0pCiAgICAgICAgYnJlYWtpbmcgKz0gYm9vbChyZWNbImJyZWFraW5nIl0pCgogICAgcGF5bG9hZCA9IHsKICAgICAgICAib2siOiBUcnVlLAogICAgICAgICJjb3VudCI6IGxlbihyb3dzKSwKICAgICAgICAiY29uc2lkZXJlZCI6IGxlbihyb3dzKSAtIHNraXBwZWQsCiAgICAgICAgImNoZWNrZWQiOiBjaGVja2VkLAogICAgICAgICJicmVha2luZyI6IGJyZWFraW5nLAogICAgICAgICJwYWNrZWQiOiByZXBhY2socm93cyksCiAgICB9CiAgICBpZiBsaW1pdGVkOgogICAgICAgIHBheWxvYWRbInJhdGVfbGltaXRlZCJdID0gbGltaXRlZAogICAgICAgIHBheWxvYWRbIndhcm5pbmciXSA9IChmIntsaW1pdGVkfSBjaGFuZ2Vsb2cocykgdW5yZWFkOiBHaXRIdWIgQVBJIHJhdGUgbGltaXQgIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICBmInJlYWNoZWQuIFNldCBHSVRIVUJfVE9LRU4gdG8gcmFpc2UgaXQgdG8gNTAwMC9ocjsgIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICBmInVudGlsIHRoZW4gdGhlc2UgcmVwb3J0IGFzIFJFVklFVywgbm90IFNBRkUuIikKICAgIGVsaWYgd2FybmluZ3M6CiAgICAgICAgIyAiY2hlY2tlZDogMCIgb24gaXRzIG93biBzYXlzIG5vdGhpbmcgYWJvdXQgd2h5LiBBIDQwMywgYW4gdW5rbm93bgogICAgICAgICMgcmVwb3NpdG9yeSBhbmQgYSBwcm9qZWN0IHRoYXQgdGFncyBpbnN0ZWFkIG9mIHJlbGVhc2luZyBhbGwgZGVncmFkZSB0bwogICAgICAgICMgUkVWSUVXLCBhbmQgdGhleSBhcmUgbm90IHRoZSBzYW1lIHByb2JsZW0gdG8gZml4LgogICAgICAgIHBheWxvYWRbInVucmVhZCJdID0gbGVuKHdhcm5pbmdzKQogICAgICAgIHBheWxvYWRbIndhcm5pbmciXSA9ICI7ICIuam9pbih3YXJuaW5nc1s6NV0pCiAgICBlbWl0KHBheWxvYWQpCgoKZGVmIG1haW4oKToKICAgIGlmIGxlbihzeXMuYXJndikgPiAxIGFuZCBzeXMuYXJndlsxXSA9PSAiLS1iYXRjaCI6CiAgICAgICAgaWYgbGVuKHN5cy5hcmd2KSA8IDM6CiAgICAgICAgICAgIGRpZSgidXNhZ2U6IGZldGNoX2NoYW5nZWxvZy5weSAtLWJhdGNoIDx1cHN0cmVhbSBwYXlsb2FkPiIpCiAgICAgICAgcnVuX2JhdGNoKHN5cy5hcmd2WzJdKQoKICAgIGlmIGxlbihzeXMuYXJndikgPCA0OgogICAgICAgIGRpZSgidXNhZ2U6IGZldGNoX2NoYW5nZWxvZy5weSA8b3duZXIvcmVwbz4gPGN1cnJlbnRfdmVyc2lvbj4gPGxhdGVzdF92ZXJzaW9uPlxuIgogICAgICAgICAgICAiICAgb3I6IGZldGNoX2NoYW5nZWxvZy5weSAtLWJhdGNoIDx1cHN0cmVhbSBwYXlsb2FkPiIpCiAgICBlbWl0KHJlYWRfbm90ZXMoc3lzLmFyZ3ZbMV0sIHN5cy5hcmd2WzJdLCBzeXMuYXJndlszXSkpCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIG1haW4oKQo=').decode())"
- *     - "--batch"
- *     - "@locate_callsites.stdout.text"
+ *     timeout_ms: 240000
  *     depends_on:
  *     - locate_callsites
+ *     argv:
+ *     - python3
+ *     - -c
+ *     - |2
+ *
+ *       #!/usr/bin/env python3
+ *       """Step 3 — read release notes between two versions and judge them breaking.
+ *
+ *       Contract (rote step):
+ *         Every remote problem is an EXPECTED ABSENCE -> ok:true, exit 0.
+ *
+ *         The honesty rule that matters most here: when we cannot read the notes, the
+ *         answer is "unknown", never "no breaking changes". A false negative here tells
+ *         someone an upgrade is safe when nobody checked. `breaking` is only false when
+ *         notes were actually read and contained no breaking markers; `checked` says
+ *         which of those two situations you are in.
+ *
+ *       GITHUB_API_BASE overrides the API root (default https://api.github.com) for
+ *       GitHub Enterprise installs and for hermetic tests of the success path.
+ *
+ *       Rate limit: the GitHub REST API allows 60 unauthenticated requests per hour,
+ *       and a 47-dependency project blows through that. Set GITHUB_TOKEN to raise it to
+ *       5000/hr. The token is optional by design so the Play still runs with no
+ *       credentials at all -- it simply reports more "unknown" rows without one.
+ *       """
+ *       import json
+ *       import os
+ *       import re
+ *       import sys
+ *       import urllib.error
+ *       import urllib.parse
+ *       import urllib.request
+ *
+ *       FS = chr(31)
+ *       RS = chr(30)
+ *       UA = "upgrade-impact-triage/0.1 (+https://play.modiqo.ai)"
+ *       TIMEOUT = 25
+ *
+ *
+ *       def api_base():
+ *           """Read at call time, not import time, so tests can point it at a stub."""
+ *           return (os.environ.get("GITHUB_API_BASE", "").strip()
+ *                   or "https://api.github.com").rstrip("/")
+ *
+ *       BREAKING_PATTERNS = [
+ *           (re.compile(r"\bBREAKING[ -]CHANGES?\b", re.I), "breaking-change"),
+ *           (re.compile(r"^[ \t]*#{1,4}[ \t]*breaking\b", re.I | re.M), "breaking-heading"),
+ *           (re.compile(r"\bbackwards?[- ]incompatible\b", re.I), "incompatible"),
+ *           (re.compile(r"^[ \t]*[-*][ \t]*\*{0,2}(removed?|dropped?)\*{0,2}\s+", re.I | re.M), "removal"),
+ *           (re.compile(r"\brenamed?\b.{0,40}\bto\b", re.I), "rename"),
+ *           (re.compile(r"\bno longer\b", re.I), "no-longer"),
+ *           (re.compile(r"\bmigration guide\b", re.I), "migration-guide"),
+ *       ]
+ *
+ *
+ *       # GitHub's `prerelease` flag is author-set and often left false on rc tags,
+ *       # so the tag itself is the more reliable signal. Requires digits around the
+ *       # marker so "v1.2.3-abc" is not read as an alpha.
+ *       PRERELEASE_TAG = re.compile(
+ *           r"\d(?:[-._]?(?:rc|alpha|beta|dev|pre)\d*|(?:a|b|rc)\d+)\b", re.I)
+ *
+ *
+ *       def is_prerelease(rel):
+ *           return bool(rel.get("prerelease")
+ *                       or PRERELEASE_TAG.search(str(rel.get("tag_name") or "")))
+ *
+ *
+ *       def first_line(text, pos):
+ *           """The first non-blank line at or after `pos`.
+ *
+ *           A match can begin on a blank line, so the text at `pos` is not always the
+ *           line worth quoting. Never return an empty sample.
+ *           """
+ *           for line in text[pos:pos + 400].splitlines():
+ *               if line.strip():
+ *                   return line.strip()
+ *           return ""
+ *
+ *
+ *       def die(msg):
+ *           print(f"fetch_changelog: {msg}", file=sys.stderr)
+ *           raise SystemExit(2)
+ *
+ *
+ *       def emit(payload):
+ *           sys.stdout.write(json.dumps(payload) + "\n")
+ *           raise SystemExit(0)
+ *
+ *
+ *       def parse_version(v):
+ *           parts = re.findall(r"\d+", str(v) or "")
+ *           return tuple(int(p) for p in parts[:3]) + (0,) * (3 - len(parts[:3]))
+ *
+ *
+ *       def tag_version(tag):
+ *           """Pull a version tuple out of a release tag such as v1.2.3 or rel-1.2.3."""
+ *           m = re.search(r"(\d+(?:\.\d+){0,2})", str(tag) or "")
+ *           return parse_version(m.group(1)) if m else None
+ *
+ *
+ *       def get_json(url):
+ *           """Return (data, error, rate_limited)."""
+ *           headers = {"User-Agent": UA, "Accept": "application/vnd.github+json"}
+ *           token = os.environ.get("GITHUB_TOKEN", "").strip()
+ *           if token:
+ *               headers["Authorization"] = f"Bearer {token}"
+ *           req = urllib.request.Request(url, headers=headers)
+ *           try:
+ *               with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+ *                   return json.loads(resp.read().decode("utf-8")), "", False
+ *           except urllib.error.HTTPError as exc:
+ *               remaining = exc.headers.get("X-RateLimit-Remaining") if exc.headers else None
+ *               if exc.code in (403, 429) and remaining == "0":
+ *                   return None, "GitHub API rate limit reached (set GITHUB_TOKEN to raise it)", True
+ *               if exc.code == 404:
+ *                   return None, "no releases published for this repository", False
+ *               return None, f"HTTP {exc.code}", False
+ *           except Exception as exc:                              # noqa: BLE001
+ *               return None, str(exc), False
+ *
+ *
+ *       # ---------------------------------------------------------------------------
+ *       # Carrier record — how dependency facts cross a step boundary.
+ *       #
+ *       # Each stage fills its own columns and passes the rest through, so the whole
+ *       # triage runs as a linear DAG wired by value edges. No stage needs a file on
+ *       # disk, and no stage needs to know how many dependencies there are.
+ *       #
+ *       #   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+ *       #   1 name        4 repo     7 direct     10 checked
+ *       #   2 current     5 gap      8 files      11 breaking
+ *       #
+ *       # Booleans are "1" / "0" when known and "" when the stage that fills them has
+ *       # not run. That third state is load-bearing: an unfilled column must read as
+ *       # UNKNOWN downstream, never as a clean bill of health.
+ *       # ---------------------------------------------------------------------------
+ *       COLS = 13
+ *
+ *
+ *       def scrub(value):
+ *           """Field text can never contain the delimiters that frame it."""
+ *           return str(value).replace(FS, " ").replace(RS, " ")
+ *
+ *
+ *       def unpack(packed):
+ *           """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+ *           rows = []
+ *           for chunk in (packed or "").split(RS):
+ *               if chunk:
+ *                   rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+ *           return rows
+ *
+ *
+ *       def repack(rows):
+ *           return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+ *
+ *
+ *       def upstream_packed(arg):
+ *           """The previous step's output, however the value edge chose to deliver it.
+ *
+ *           A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+ *           accepted, so the step does not depend on whether the edge resolves
+ *           `.stdout.text` or `.stdout.json.packed`.
+ *           """
+ *           text = (arg or "").strip()
+ *           if not text.startswith("{"):
+ *               return text
+ *           try:
+ *               doc = json.loads(text)
+ *           except json.JSONDecodeError as exc:
+ *               die(f"upstream payload will not parse as JSON: {exc}")
+ *           if not isinstance(doc, dict):
+ *               die("upstream payload is not a JSON object")
+ *           return doc.get("packed", "")
+ *
+ *
+ *       def read_notes(repo, current, latest):
+ *           """Read the release notes between two versions and judge them breaking.
+ *
+ *           Never raises: every remote problem is an expected absence. When the notes
+ *           cannot be read the answer is `checked: false` — "unknown" — and never
+ *           `breaking: false`.
+ *           """
+ *           base = {
+ *               "ok": True, "repo": repo, "current": current, "latest": latest,
+ *               "checked": False,          # were release notes actually read?
+ *               "breaking": False,         # only meaningful when checked is true
+ *               "releases": 0, "markers": "", "packed": "",
+ *           }
+ *
+ *           cur_v, new_v = parse_version(current), parse_version(latest)
+ *
+ *           if not repo or "/" not in repo:
+ *               base["warning"] = "no GitHub repository known; cannot read release notes"
+ *               if new_v[0] > cur_v[0]:
+ *                   base["markers"] = "major-version-bump"
+ *                   base["note"] = "unread notes, but a major version bump implies breaking changes"
+ *               return base
+ *
+ *           data, err, limited = get_json(
+ *               f"{api_base()}/repos/{urllib.parse.quote(repo)}/releases?per_page=100")
+ *           if data is None:
+ *               base["warning"] = f"{repo}: {err}"
+ *               base["rate_limited"] = limited
+ *               # Major bumps are breaking by semver convention even when notes are unreadable.
+ *               if new_v[0] > cur_v[0]:
+ *                   base["markers"] = "major-version-bump"
+ *                   base["note"] = "unread notes, but a major version bump implies breaking changes"
+ *               return base
+ *
+ *           candidates = []
+ *           for rel in data:
+ *               if rel.get("draft"):
+ *                   continue
+ *               tv = tag_version(rel.get("tag_name"))
+ *               if tv is None or not (cur_v < tv <= new_v):
+ *                   continue
+ *               candidates.append(rel)
+ *
+ *           # A release candidate's notes are superseded by the final release's, so
+ *           # counting both reports every finding twice (v2.4.0 and v2.4.0rc1 with
+ *           # identical text). Drop prereleases -- unless they are all there is, in
+ *           # which case they are the only evidence available and dropping them would
+ *           # turn a real finding into a false "nothing to read".
+ *           stable = [rel for rel in candidates if not is_prerelease(rel)]
+ *           in_range = stable or candidates
+ *
+ *           markers, samples = set(), []
+ *           for rel in in_range:
+ *               body = rel.get("body") or ""
+ *               for pat, label in BREAKING_PATTERNS:
+ *                   m = pat.search(body)
+ *                   if m:
+ *                       markers.add(label)
+ *                       line = first_line(body, m.start())
+ *                       if line and len(samples) < 12:
+ *                           samples.append((str(rel.get("tag_name") or "?"), label, line[:150]))
+ *
+ *           base.update({
+ *               "checked": True,
+ *               "releases": len(in_range),
+ *               "breaking": bool(markers),
+ *               "markers": ",".join(sorted(markers)),
+ *               "packed": RS.join(FS.join(s) for s in samples),
+ *           })
+ *
+ *           if not in_range:
+ *               base["checked"] = False
+ *               base["warning"] = (f"{repo}: no releases found between {current} and {latest} "
+ *                                  f"(project may use tags or a CHANGELOG file instead)")
+ *               if new_v[0] > cur_v[0]:
+ *                   base["markers"] = "major-version-bump"
+ *           elif new_v[0] > cur_v[0] and not markers:
+ *               base["breaking"] = True
+ *               base["markers"] = "major-version-bump"
+ *               base["note"] = "no breaking wording in notes, but the major version changed"
+ *
+ *           return base
+ *
+ *
+ *       def run_batch(arg):
+ *           """Read notes for every outdated dependency, filling carrier columns 10-12.
+ *
+ *           Dependencies already at the latest version are skipped: their columns stay
+ *           empty, which downstream reads as CURRENT rather than as a verdict. Nothing
+ *           here can turn an unread changelog into a clean one — a rate-limited run
+ *           leaves `checked` at "0" and produces more REVIEW rows, never fewer ACT rows.
+ *           """
+ *           rows = unpack(upstream_packed(arg))
+ *           if not rows:
+ *               emit({"ok": True, "warning": "no dependencies on input", "count": 0,
+ *                     "checked": 0, "breaking": 0, "packed": ""})
+ *
+ *           checked = breaking = limited = skipped = 0
+ *           warnings = []
+ *           for row in rows:
+ *               if row[6] != "1":                     # not outdated; nothing to compare
+ *                   skipped += 1
+ *                   continue
+ *               rec = read_notes(row[4], row[2], row[3])
+ *               if rec.get("rate_limited"):
+ *                   limited += 1
+ *               elif rec.get("warning"):
+ *                   warnings.append(rec["warning"])
+ *               row[10] = "1" if rec["checked"] else "0"
+ *               row[11] = "1" if rec["breaking"] else "0"
+ *               row[12] = rec["markers"]
+ *               checked += bool(rec["checked"])
+ *               breaking += bool(rec["breaking"])
+ *
+ *           payload = {
+ *               "ok": True,
+ *               "count": len(rows),
+ *               "considered": len(rows) - skipped,
+ *               "checked": checked,
+ *               "breaking": breaking,
+ *               "packed": repack(rows),
+ *           }
+ *           if limited:
+ *               payload["rate_limited"] = limited
+ *               payload["warning"] = (f"{limited} changelog(s) unread: GitHub API rate limit "
+ *                                     f"reached. Set GITHUB_TOKEN to raise it to 5000/hr; "
+ *                                     f"until then these report as REVIEW, not SAFE.")
+ *           elif warnings:
+ *               # "checked: 0" on its own says nothing about why. A 403, an unknown
+ *               # repository and a project that tags instead of releasing all degrade to
+ *               # REVIEW, and they are not the same problem to fix.
+ *               payload["unread"] = len(warnings)
+ *               payload["warning"] = "; ".join(warnings[:5])
+ *           emit(payload)
+ *
+ *
+ *       def main():
+ *           if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+ *               if len(sys.argv) < 3:
+ *                   die("usage: fetch_changelog.py --batch <upstream payload>")
+ *               run_batch(sys.argv[2])
+ *
+ *           if len(sys.argv) < 4:
+ *               die("usage: fetch_changelog.py <owner/repo> <current_version> <latest_version>\n"
+ *                   "   or: fetch_changelog.py --batch <upstream payload>")
+ *           emit(read_notes(sys.argv[1], sys.argv[2], sys.argv[3]))
+ *
+ *
+ *       if __name__ == "__main__":
+ *           main()
+ *     - "--batch"
+ *     - "@locate_callsites{$.stdout.text | fromjson | .packed}"
  *   rank_verdict:
  *     type: process.exec
- *     argv:
- *     - "python3"
- *     - "-c"
- *     - "import base64;exec(base64.b64decode('IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJTdGVwIDUg4oCUIGpvaW4gcmVnaXN0cnksIGNoYW5nZWxvZyBhbmQgY2FsbC1zaXRlIGZhY3RzIGludG8gYSByYW5rZWQgdmVyZGljdC4KClJlYWRzIG9uZSBKU09OIG9iamVjdCBwZXIgbGluZSwgZWFjaCBtZXJnaW5nIHdoYXQgdGhlIGVhcmxpZXIgc3RlcHMgbGVhcm5lZAphYm91dCBhIHNpbmdsZSBkZXBlbmRlbmN5LCBhbmQgZW1pdHMgdGhlIGNhbm9uaWNhbCByZXN1bHQuIElucHV0IGNvbWVzIGZyb20gYQpmaWxlIHdoZW4gYSBwYXRoIGlzIGdpdmVuIGFuZCBmcm9tIHN0ZGluIG90aGVyd2lzZSAtLSBhIHJvdGUgc3RlcCBoYXMgbm8gVFRZLApzbyB0aGUgZmlsZSBmb3JtIGlzIHdoYXQgbWFrZXMgdGhpcyBjYXB0dXJhYmxlIGFuZCBydW5uYWJsZSBhcyBhIHN0ZXAuCgpUaGUgcmFua2luZyBydWxlLCBhbmQgdGhlIHJlYXNvbiB0aGUgUGxheSBpcyB3b3J0aCBydW5uaW5nOgoKICBBQ1QgICAgICBicmVha2luZyBjaGFuZ2VzIEFORCB5b3UgaW1wb3J0IGl0IGRpcmVjdGx5LiAgICAgICAtPiB5b3VyIHByb2JsZW0sIHRvZGF5CiAgUkVWSUVXICAgeW91IGltcG9ydCBpdCBkaXJlY3RseSwgYnV0IGJyZWFraW5nIHN0YXR1cyBpcwogICAgICAgICAgIFVOS05PV04gYmVjYXVzZSBub3RlcyBjb3VsZCBub3QgYmUgcmVhZC4gICAgICAgICAgIC0+IG5vYm9keSBjaGVja2VkOyB5b3UgZGVjaWRlCiAgU0FGRSAgICAgb3V0ZGF0ZWQsIGJ1dCB5b3UgbmV2ZXIgaW1wb3J0IGl0IGRpcmVjdGx5LCBvcgogICAgICAgICAgIHRoZSBub3RlcyB3ZXJlIHJlYWQgYW5kIHdlcmUgY2xlYW4uICAgICAgICAgICAgICAgIC0+IGJ1bXAgaXQgYmxpbmQKICBDVVJSRU5UICBhbHJlYWR5IGF0IHRoZSBsYXRlc3QgdmVyc2lvbi4KClJFVklFVyBleGlzdHMgc28gYW4gdW5yZWFkYWJsZSBjaGFuZ2Vsb2cgY2FuIG5ldmVyIGJlIGxhdW5kZXJlZCBpbnRvICJzYWZlIi4KQSByYXRlLWxpbWl0ZWQgcnVuIHJlcG9ydHMgbW9yZSBSRVZJRVcgcm93czsgaXQgbmV2ZXIgcmVwb3J0cyBmZXdlciBBQ1Qgcm93cy4KIiIiCmltcG9ydCBqc29uCmltcG9ydCBzeXMKCkZTID0gY2hyKDMxKQpSUyA9IGNocigzMCkKCk9SREVSID0geyJBQ1QiOiAwLCAiUkVWSUVXIjogMSwgIlNBRkUiOiAyLCAiQ1VSUkVOVCI6IDN9CkdBUF9XRUlHSFQgPSB7Im1ham9yIjogMCwgIm1pbm9yIjogMSwgInBhdGNoIjogMiwgIm5vbmUiOiAzLCAidW5rbm93biI6IDQsICJhaGVhZCI6IDV9CgoKZGVmIGRpZShtc2cpOgogICAgcHJpbnQoZiJjb21wdXRlX3ZlcmRpY3Q6IHttc2d9IiwgZmlsZT1zeXMuc3RkZXJyKQogICAgcmFpc2UgU3lzdGVtRXhpdCgyKQoKCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCiMgQ2FycmllciByZWNvcmQg4oCUIGhvdyBkZXBlbmRlbmN5IGZhY3RzIGNyb3NzIGEgc3RlcCBib3VuZGFyeS4KIwojIEVhY2ggc3RhZ2UgZmlsbHMgaXRzIG93biBjb2x1bW5zIGFuZCBwYXNzZXMgdGhlIHJlc3QgdGhyb3VnaCwgc28gdGhlIHdob2xlCiMgdHJpYWdlIHJ1bnMgYXMgYSBsaW5lYXIgREFHIHdpcmVkIGJ5IHZhbHVlIGVkZ2VzLiBObyBzdGFnZSBuZWVkcyBhIGZpbGUgb24KIyBkaXNrLCBhbmQgbm8gc3RhZ2UgbmVlZHMgdG8ga25vdyBob3cgbWFueSBkZXBlbmRlbmNpZXMgdGhlcmUgYXJlLgojCiMgICAwIGVjb3N5c3RlbSAgIDMgbGF0ZXN0ICAgNiBvdXRkYXRlZCAgIDkgIGZpcnN0X3NpdGUgIDEyIG1hcmtlcnMKIyAgIDEgbmFtZSAgICAgICAgNCByZXBvICAgICA3IGRpcmVjdCAgICAgMTAgY2hlY2tlZAojICAgMiBjdXJyZW50ICAgICA1IGdhcCAgICAgIDggZmlsZXMgICAgICAxMSBicmVha2luZwojCiMgQm9vbGVhbnMgYXJlICIxIiAvICIwIiB3aGVuIGtub3duIGFuZCAiIiB3aGVuIHRoZSBzdGFnZSB0aGF0IGZpbGxzIHRoZW0gaGFzCiMgbm90IHJ1bi4gVGhhdCB0aGlyZCBzdGF0ZSBpcyBsb2FkLWJlYXJpbmc6IGFuIHVuZmlsbGVkIGNvbHVtbiBtdXN0IHJlYWQgYXMKIyBVTktOT1dOIGRvd25zdHJlYW0sIG5ldmVyIGFzIGEgY2xlYW4gYmlsbCBvZiBoZWFsdGguCiMgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCkNPTFMgPSAxMwoKCmRlZiBzY3J1Yih2YWx1ZSk6CiAgICAiIiJGaWVsZCB0ZXh0IGNhbiBuZXZlciBjb250YWluIHRoZSBkZWxpbWl0ZXJzIHRoYXQgZnJhbWUgaXQuIiIiCiAgICByZXR1cm4gc3RyKHZhbHVlKS5yZXBsYWNlKEZTLCAiICIpLnJlcGxhY2UoUlMsICIgIikKCgpkZWYgdW5wYWNrKHBhY2tlZCk6CiAgICAiIiJDYXJyaWVyIHJvd3MsIHBhZGRlZCB0byBDT0xTLiBTaG9ydCByb3dzIGNvbWUgZnJvbSBhbiBlYXJsaWVyIHN0YWdlLiIiIgogICAgcm93cyA9IFtdCiAgICBmb3IgY2h1bmsgaW4gKHBhY2tlZCBvciAiIikuc3BsaXQoUlMpOgogICAgICAgIGlmIGNodW5rOgogICAgICAgICAgICByb3dzLmFwcGVuZCgoY2h1bmsuc3BsaXQoRlMpICsgWyIiXSAqIENPTFMpWzpDT0xTXSkKICAgIHJldHVybiByb3dzCgoKZGVmIHJlcGFjayhyb3dzKToKICAgIHJldHVybiBSUy5qb2luKEZTLmpvaW4oc2NydWIoY29sKSBmb3IgY29sIGluIHJvdykgZm9yIHJvdyBpbiByb3dzKQoKCmRlZiB1cHN0cmVhbV9wYWNrZWQoYXJnKToKICAgICIiIlRoZSBwcmV2aW91cyBzdGVwJ3Mgb3V0cHV0LCBob3dldmVyIHRoZSB2YWx1ZSBlZGdlIGNob3NlIHRvIGRlbGl2ZXIgaXQuCgogICAgQSB3aG9sZSBzdGRvdXQgcGF5bG9hZCAoYSBKU09OIG9iamVjdCkgYW5kIGEgYmFyZSBgcGFja2VkYCBzY2FsYXIgYXJlIGJvdGgKICAgIGFjY2VwdGVkLCBzbyB0aGUgc3RlcCBkb2VzIG5vdCBkZXBlbmQgb24gd2hldGhlciB0aGUgZWRnZSByZXNvbHZlcwogICAgYC5zdGRvdXQudGV4dGAgb3IgYC5zdGRvdXQuanNvbi5wYWNrZWRgLgogICAgIiIiCiAgICB0ZXh0ID0gKGFyZyBvciAiIikuc3RyaXAoKQogICAgaWYgbm90IHRleHQuc3RhcnRzd2l0aCgieyIpOgogICAgICAgIHJldHVybiB0ZXh0CiAgICB0cnk6CiAgICAgICAgZG9jID0ganNvbi5sb2Fkcyh0ZXh0KQogICAgZXhjZXB0IGpzb24uSlNPTkRlY29kZUVycm9yIGFzIGV4YzoKICAgICAgICBkaWUoZiJ1cHN0cmVhbSBwYXlsb2FkIHdpbGwgbm90IHBhcnNlIGFzIEpTT046IHtleGN9IikKICAgIGlmIG5vdCBpc2luc3RhbmNlKGRvYywgZGljdCk6CiAgICAgICAgZGllKCJ1cHN0cmVhbSBwYXlsb2FkIGlzIG5vdCBhIEpTT04gb2JqZWN0IikKICAgIHJldHVybiBkb2MuZ2V0KCJwYWNrZWQiLCAiIikKCgpkZWYgZW1pdChwYXlsb2FkKToKICAgIHN5cy5zdGRvdXQud3JpdGUoanNvbi5kdW1wcyhwYXlsb2FkKSArICJcbiIpCiAgICByYWlzZSBTeXN0ZW1FeGl0KDApCgoKZGVmIGNsYXNzaWZ5KHJlYyk6CiAgICAjIEFuIHVuZmlsbGVkIGZhY3QgaXMgVU5LTk9XTiwgbmV2ZXIgYSBjbGVhbiBiaWxsIG9mIGhlYWx0aC4gQSBzdGFnZSB0aGF0CiAgICAjIGRpZCBub3QgcnVuIG11c3Qgd2lkZW4gUkVWSUVXOyBpdCBtdXN0IG5ldmVyIG5hcnJvdyBpdCwgYmVjYXVzZSB0aGUgd2hvbGUKICAgICMgdmFsdWUgb2YgdGhpcyBQbGF5IGlzIHRoYXQgInNhZmUgdG8gYnVtcCIgbWVhbnMgc29tZWJvZHkgY2hlY2tlZC4KICAgIGlmIHJlYy5nZXQoIm91dGRhdGVkX3Vua25vd24iKToKICAgICAgICByZXR1cm4gIlJFVklFVyIsICJ2ZXJzaW9uIG5ldmVyIHJlc29sdmVkOyBzdGF0dXMgdW5rbm93biIKICAgIGlmIG5vdCByZWMuZ2V0KCJvdXRkYXRlZCIpOgogICAgICAgIHJldHVybiAiQ1VSUkVOVCIsICJhbHJlYWR5IGN1cnJlbnQiCiAgICBpZiByZWMuZ2V0KCJkaXJlY3RfdW5rbm93biIpOgogICAgICAgIHJldHVybiAiUkVWSUVXIiwgImNhbGwgc2l0ZXMgbmV2ZXIgc2Nhbm5lZDsgc3RhdHVzIHVua25vd24iCgogICAgZGlyZWN0ID0gYm9vbChyZWMuZ2V0KCJkaXJlY3QiKSkKICAgIGNoZWNrZWQgPSBib29sKHJlYy5nZXQoImNoZWNrZWQiKSkKICAgIGJyZWFraW5nID0gYm9vbChyZWMuZ2V0KCJicmVha2luZyIpKQoKICAgIGlmIG5vdCBkaXJlY3Q6CiAgICAgICAgcmV0dXJuICJTQUZFIiwgIm5vdCBpbXBvcnRlZCBkaXJlY3RseTsgdHJhbnNpdGl2ZSIKICAgIGlmIGJyZWFraW5nOgogICAgICAgIHJldHVybiAiQUNUIiwgcmVjLmdldCgibWFya2VycyIpIG9yICJicmVha2luZyBjaGFuZ2VzIGluIHJhbmdlIgogICAgaWYgbm90IGNoZWNrZWQ6CiAgICAgICAgd2h5ID0gcmVjLmdldCgid2FybmluZyIpIG9yICJyZWxlYXNlIG5vdGVzIHVuYXZhaWxhYmxlOyBzdGF0dXMgdW5rbm93biIKICAgICAgICAjIE1hcmtlcnMgZm91bmQgd2l0aG91dCByZWFkaW5nIHRoZSBub3RlcyAtLSBhIG1ham9yIHZlcnNpb24gYnVtcCAtLSBhcmUKICAgICAgICAjIHN0aWxsIGV2aWRlbmNlLiBTdXJmYWNpbmcgdGhlbSBrZWVwcyBhIGRlZ3JhZGVkIHJvdyBpbmZvcm1hdGl2ZQogICAgICAgICMgd2l0aG91dCBwcm9tb3RpbmcgaXQgb3V0IG9mIFJFVklFVy4KICAgICAgICBpZiByZWMuZ2V0KCJtYXJrZXJzIik6CiAgICAgICAgICAgIHdoeSA9IGYie3doeX0gKHtyZWNbJ21hcmtlcnMnXX0pIgogICAgICAgIHJldHVybiAiUkVWSUVXIiwgd2h5CiAgICByZXR1cm4gIlNBRkUiLCAibm90ZXMgcmVhZCwgbm8gYnJlYWtpbmcgbWFya2VycyIKCgpkZWYgcmVjb3JkX2Zyb21fcm93KHJvdyk6CiAgICAiIiJBIGNhcnJpZXIgcm93IGFzIHRoZSByZWNvcmQgY2xhc3NpZnkoKSBleHBlY3RzLCB1bmtub3ducyBwcmVzZXJ2ZWQuIiIiCiAgICByZXR1cm4gewogICAgICAgICJlY29zeXN0ZW0iOiByb3dbMF0sCiAgICAgICAgIm5hbWUiOiByb3dbMV0sCiAgICAgICAgImN1cnJlbnQiOiByb3dbMl0sCiAgICAgICAgImxhdGVzdCI6IHJvd1szXSwKICAgICAgICAiZ2FwIjogcm93WzVdIG9yICJ1bmtub3duIiwKICAgICAgICAib3V0ZGF0ZWQiOiByb3dbNl0gPT0gIjEiLAogICAgICAgICJvdXRkYXRlZF91bmtub3duIjogcm93WzZdID09ICIiLAogICAgICAgICJkaXJlY3QiOiByb3dbN10gPT0gIjEiLAogICAgICAgICJkaXJlY3RfdW5rbm93biI6IHJvd1s3XSA9PSAiIiwKICAgICAgICAiZmlsZXMiOiBpbnQocm93WzhdKSBpZiByb3dbOF0uaXNkaWdpdCgpIGVsc2UgMCwKICAgICAgICAiZmlyc3Rfc2l0ZSI6IHJvd1s5XSwKICAgICAgICAiY2hlY2tlZCI6IHJvd1sxMF0gPT0gIjEiLAogICAgICAgICJicmVha2luZyI6IHJvd1sxMV0gPT0gIjEiLAogICAgICAgICJtYXJrZXJzIjogcm93WzEyXSwKICAgIH0KCgpkZWYgcmVhZF9yZWNvcmRzKCk6CiAgICAiIiJSZWNvcmRzIGZyb20gLS1iYXRjaCwgZnJvbSBhIG5hbWVkIGZpbGUsIG9yIGZyb20gc3RkaW4uCgogICAgLS1iYXRjaCBpcyB0aGUgZm9ybSB0aGUgUGxheSB1c2VzOiB0aGUgdXBzdHJlYW0gc3RlcCdzIG91dHB1dCBhcnJpdmVzIHdob2xlCiAgICBhcyBvbmUgYXJndiBzY2FsYXIsIHNvIG5vdGhpbmcgaGFzIHRvIGV4aXN0IG9uIGRpc2sgYW5kIHRoZSBjaGFpbiB3b3JrcyBvbiBhCiAgICBtYWNoaW5lIHRoYXQgaGFzIG5ldmVyIHNlZW4gdGhpcyByZXBvc2l0b3J5LgogICAgIiIiCiAgICBhcmd2ID0gc3lzLmFyZ3ZbMTpdCiAgICBpZiBhcmd2IGFuZCBhcmd2WzBdID09ICItLWJhdGNoIjoKICAgICAgICBpZiBsZW4oYXJndikgPCAyOgogICAgICAgICAgICBkaWUoInVzYWdlOiBjb21wdXRlX3ZlcmRpY3QucHkgLS1iYXRjaCA8dXBzdHJlYW0gcGF5bG9hZD4iKQogICAgICAgIHJldHVybiBbcmVjb3JkX2Zyb21fcm93KHJvdykgZm9yIHJvdyBpbiB1bnBhY2sodXBzdHJlYW1fcGFja2VkKGFyZ3ZbMV0pKV0KCiAgICBzdHJlYW0sIG9wZW5lZCA9IE5vbmUsIEZhbHNlCiAgICBpZiBhcmd2OgogICAgICAgIHRyeToKICAgICAgICAgICAgc3RyZWFtLCBvcGVuZWQgPSBvcGVuKGFyZ3ZbMF0sIGVuY29kaW5nPSJ1dGYtOCIpLCBUcnVlCiAgICAgICAgZXhjZXB0IE9TRXJyb3IgYXMgZXhjOgogICAgICAgICAgICAjIEEgbmFtZWQgZmlsZSB0aGF0IGNhbm5vdCBiZSByZWFkIGlzIGEgYnJva2VuIGludm9jYXRpb24sIG5vdCBhbgogICAgICAgICAgICAjIGV4cGVjdGVkIGFic2VuY2U6IGZhaWxpbmcgY2xvc2VkIGJlYXRzIHRyaWFnaW5nIHplcm8gZGVwZW5kZW5jaWVzCiAgICAgICAgICAgICMgYW5kIHJlcG9ydGluZyAibm90aGluZyB0byB0cmlhZ2UiLgogICAgICAgICAgICBkaWUoZiJjYW5ub3QgcmVhZCB7YXJndlswXX06IHtleGN9IikKICAgIGVsc2U6CiAgICAgICAgc3RyZWFtID0gc3lzLnN0ZGluCgogICAgcmVjb3JkcyA9IFtdCiAgICBmb3IgbGluZV9ubywgbGluZSBpbiBlbnVtZXJhdGUoc3RyZWFtLCAxKToKICAgICAgICBsaW5lID0gbGluZS5zdHJpcCgpCiAgICAgICAgaWYgbm90IGxpbmU6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdHJ5OgogICAgICAgICAgICByZWNvcmRzLmFwcGVuZChqc29uLmxvYWRzKGxpbmUpKQogICAgICAgIGV4Y2VwdCBqc29uLkpTT05EZWNvZGVFcnJvciBhcyBleGM6CiAgICAgICAgICAgIGRpZShmImxpbmUge2xpbmVfbm99IGlzIG5vdCB2YWxpZCBKU09OOiB7ZXhjfSIpCiAgICBpZiBvcGVuZWQ6CiAgICAgICAgc3RyZWFtLmNsb3NlKCkKICAgIHJldHVybiByZWNvcmRzCgoKZGVmIHJlbmRlcihyb3dzLCBoZWFkbGluZSk6CiAgICAiIiJBIHBsYWluLXRleHQgcmVwb3J0LCBidWlsdCBoZXJlIHJhdGhlciB0aGFuIGluIHRoZSBQbGF5IGJvZHkuCgogICAgVGhlIFBsYXkncyBwcmVzZW50YXRpb24gbGF5ZXIgaGFzIG9uZSBqb2IgLS0gcHJpbnQgdGhpcyBzdHJpbmcgLS0gc28gdGhlCiAgICBmb3JtYXR0aW5nIGlzIGNvdmVyZWQgYnkgdGhlIHNhbWUgdGVzdHMgYXMgdGhlIHJhbmtpbmcgaXQgcHJlc2VudHMuCiAgICAiIiIKICAgIGlmIG5vdCByb3dzOgogICAgICAgIHJldHVybiBoZWFkbGluZQogICAgd2lkdGggPSB7CiAgICAgICAgIm5hbWUiOiBtYXgobGVuKHJbIm5hbWUiXSkgZm9yIHIgaW4gcm93cyksCiAgICAgICAgInZlciI6IG1heChsZW4oZid7clsiY3VycmVudCJdIG9yICItIn0gLT4ge3JbImxhdGVzdCJdIG9yICItIn0nKSBmb3IgciBpbiByb3dzKSwKICAgICAgICAiZ2FwIjogbWF4KGxlbihyWyJnYXAiXSkgZm9yIHIgaW4gcm93cyksCiAgICB9CiAgICBsaW5lcyA9IFtoZWFkbGluZSwgIiJdCiAgICBmb3IgciBpbiByb3dzOgogICAgICAgIHZlcnNpb25zID0gZid7clsiY3VycmVudCJdIG9yICItIn0gLT4ge3JbImxhdGVzdCJdIG9yICItIn0nCiAgICAgICAgZmlsZXMgPSBmJ3tyWyJmaWxlcyJdfSBmaWxlJyArICgicyIgaWYgclsiZmlsZXMiXSAhPSAxIGVsc2UgIiIpCiAgICAgICAgbGluZXMuYXBwZW5kKAogICAgICAgICAgICBmJyAge3JbInRpZXIiXTo8N30ge3JbImVjb3N5c3RlbSJdOjw2fSB7clsibmFtZSJdOjx7d2lkdGhbIm5hbWUiXX19ICAnCiAgICAgICAgICAgIGYne3ZlcnNpb25zOjx7d2lkdGhbInZlciJdfX0gIHtyWyJnYXAiXTo8e3dpZHRoWyJnYXAiXX19ICAnCiAgICAgICAgICAgIGYne2ZpbGVzOj44fSAge3JbInNpdGUiXSBvciAiLSJ9Jy5yc3RyaXAoKSkKICAgICAgICBsaW5lcy5hcHBlbmQoZicgIHsiIjo8N30ge3JbIndoeSJdfScpCiAgICByZXR1cm4gIlxuIi5qb2luKGxpbmVzKQoKCmRlZiBtYWluKCk6CiAgICByZWNvcmRzID0gcmVhZF9yZWNvcmRzKCkKCiAgICBpZiBub3QgcmVjb3JkczoKICAgICAgICBlbWl0KHsKICAgICAgICAgICAgIm9rIjogVHJ1ZSwgIndhcm5pbmciOiAibm8gZGVwZW5kZW5jeSByZWNvcmRzIG9uIGlucHV0IiwKICAgICAgICAgICAgInRvdGFsIjogMCwgImFjdCI6IDAsICJyZXZpZXciOiAwLCAic2FmZSI6IDAsICJjdXJyZW50IjogMCwKICAgICAgICAgICAgImhlYWRsaW5lIjogIm5vdGhpbmcgdG8gdHJpYWdlIiwgInJlcG9ydCI6ICJub3RoaW5nIHRvIHRyaWFnZSIsCiAgICAgICAgICAgICJwYWNrZWQiOiAiIiwKICAgICAgICB9KQoKICAgIHJvd3MgPSBbXQogICAgZm9yIHJlYyBpbiByZWNvcmRzOgogICAgICAgIHRpZXIsIHdoeSA9IGNsYXNzaWZ5KHJlYykKICAgICAgICByb3dzLmFwcGVuZCh7CiAgICAgICAgICAgICJ0aWVyIjogdGllciwKICAgICAgICAgICAgImVjb3N5c3RlbSI6IHJlYy5nZXQoImVjb3N5c3RlbSIsICI/IiksCiAgICAgICAgICAgICJuYW1lIjogcmVjLmdldCgibmFtZSIsICI/IiksCiAgICAgICAgICAgICJjdXJyZW50IjogcmVjLmdldCgiY3VycmVudCIsICIiKSwKICAgICAgICAgICAgImxhdGVzdCI6IHJlYy5nZXQoImxhdGVzdCIsICIiKSwKICAgICAgICAgICAgImdhcCI6IHJlYy5nZXQoImdhcCIsICJ1bmtub3duIiksCiAgICAgICAgICAgICJkaXJlY3QiOiBib29sKHJlYy5nZXQoImRpcmVjdCIpKSwKICAgICAgICAgICAgImZpbGVzIjogcmVjLmdldCgiZmlsZXMiLCAwKSwKICAgICAgICAgICAgIndoeSI6IHdoeSwKICAgICAgICAgICAgInNpdGUiOiByZWMuZ2V0KCJmaXJzdF9zaXRlIiwgIiIpLAogICAgICAgIH0pCgogICAgcm93cy5zb3J0KGtleT1sYW1iZGEgcjogKE9SREVSW3JbInRpZXIiXV0sIEdBUF9XRUlHSFQuZ2V0KHJbImdhcCJdLCA5KSwgclsibmFtZSJdKSkKICAgIGNvdW50cyA9IHt0OiBzdW0oMSBmb3IgciBpbiByb3dzIGlmIHJbInRpZXIiXSA9PSB0KSBmb3IgdCBpbiBPUkRFUn0KICAgIG91dGRhdGVkID0gY291bnRzWyJBQ1QiXSArIGNvdW50c1siUkVWSUVXIl0gKyBjb3VudHNbIlNBRkUiXQoKICAgIGlmIGNvdW50c1siQUNUIl06CiAgICAgICAgaGVhZGxpbmUgPSAoZiJ7Y291bnRzWydBQ1QnXX0gb2Yge2xlbihyb3dzKX0gZGVwZW5kZW5jaWVzIGhhdmUgYnJlYWtpbmcgY2hhbmdlcyAiCiAgICAgICAgICAgICAgICAgICAgZiJpbiBjb2RlIHlvdSBhY3R1YWxseSBjYWxsIikKICAgIGVsaWYgY291bnRzWyJSRVZJRVciXToKICAgICAgICBoZWFkbGluZSA9IChmIm5vIGNvbmZpcm1lZCBicmVha2luZyBjaGFuZ2VzLCBidXQge2NvdW50c1snUkVWSUVXJ119ICIKICAgICAgICAgICAgICAgICAgICBmImNvdWxkIG5vdCBiZSB2ZXJpZmllZCIpCiAgICBlbGlmIG91dGRhdGVkOgogICAgICAgIGhlYWRsaW5lID0gZiJ7b3V0ZGF0ZWR9IG91dGRhdGVkLCBub25lIG9mIHRoZW0gYnJlYWtpbmcgZm9yIHlvdXIgY29kZSIKICAgIGVsc2U6CiAgICAgICAgaGVhZGxpbmUgPSAiZXZlcnl0aGluZyBjdXJyZW50IgoKICAgIHBhY2tlZCA9IFJTLmpvaW4oRlMuam9pbihbCiAgICAgICAgclsidGllciJdLCByWyJlY29zeXN0ZW0iXSwgclsibmFtZSJdLCByWyJjdXJyZW50Il0gb3IgIi0iLCByWyJsYXRlc3QiXSBvciAiLSIsCiAgICAgICAgclsiZ2FwIl0sIHN0cihyWyJmaWxlcyJdKSwgclsid2h5Il0sIHJbInNpdGUiXSwKICAgIF0pIGZvciByIGluIHJvd3MpCgogICAgZW1pdCh7CiAgICAgICAgIm9rIjogVHJ1ZSwKICAgICAgICAicmVwb3J0IjogcmVuZGVyKHJvd3MsIGhlYWRsaW5lKSwKICAgICAgICAidG90YWwiOiBsZW4ocm93cyksCiAgICAgICAgImFjdCI6IGNvdW50c1siQUNUIl0sICJyZXZpZXciOiBjb3VudHNbIlJFVklFVyJdLAogICAgICAgICJzYWZlIjogY291bnRzWyJTQUZFIl0sICJjdXJyZW50IjogY291bnRzWyJDVVJSRU5UIl0sCiAgICAgICAgIm91dGRhdGVkIjogb3V0ZGF0ZWQsCiAgICAgICAgImhlYWRsaW5lIjogaGVhZGxpbmUsCiAgICAgICAgInBhY2tlZCI6IHBhY2tlZCwKICAgIH0pCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIG1haW4oKQo=').decode())"
- *     - "--batch"
- *     - "@read_changelogs.stdout.text"
+ *     timeout_ms: 15000
  *     depends_on:
  *     - read_changelogs
+ *     argv:
+ *     - python3
+ *     - -c
+ *     - |2
+ *
+ *       #!/usr/bin/env python3
+ *       """Step 5 — join registry, changelog and call-site facts into a ranked verdict.
+ *
+ *       Reads one JSON object per line, each merging what the earlier steps learned
+ *       about a single dependency, and emits the canonical result. Input comes from a
+ *       file when a path is given and from stdin otherwise -- a rote step has no TTY,
+ *       so the file form is what makes this capturable and runnable as a step.
+ *
+ *       The ranking rule, and the reason the Play is worth running:
+ *
+ *         ACT      breaking changes AND you import it directly.       -> your problem, today
+ *         REVIEW   you import it directly, but breaking status is
+ *                  UNKNOWN because notes could not be read.           -> nobody checked; you decide
+ *         SAFE     outdated, but you never import it directly, or
+ *                  the notes were read and were clean.                -> bump it blind
+ *         CURRENT  already at the latest version.
+ *
+ *       REVIEW exists so an unreadable changelog can never be laundered into "safe".
+ *       A rate-limited run reports more REVIEW rows; it never reports fewer ACT rows.
+ *       """
+ *       import json
+ *       import sys
+ *
+ *       FS = chr(31)
+ *       RS = chr(30)
+ *
+ *       ORDER = {"ACT": 0, "REVIEW": 1, "SAFE": 2, "CURRENT": 3}
+ *       GAP_WEIGHT = {"major": 0, "minor": 1, "patch": 2, "none": 3, "unknown": 4, "ahead": 5}
+ *
+ *
+ *       def die(msg):
+ *           print(f"compute_verdict: {msg}", file=sys.stderr)
+ *           raise SystemExit(2)
+ *
+ *
+ *       # ---------------------------------------------------------------------------
+ *       # Carrier record — how dependency facts cross a step boundary.
+ *       #
+ *       # Each stage fills its own columns and passes the rest through, so the whole
+ *       # triage runs as a linear DAG wired by value edges. No stage needs a file on
+ *       # disk, and no stage needs to know how many dependencies there are.
+ *       #
+ *       #   0 ecosystem   3 latest   6 outdated   9  first_site  12 markers
+ *       #   1 name        4 repo     7 direct     10 checked
+ *       #   2 current     5 gap      8 files      11 breaking
+ *       #
+ *       # Booleans are "1" / "0" when known and "" when the stage that fills them has
+ *       # not run. That third state is load-bearing: an unfilled column must read as
+ *       # UNKNOWN downstream, never as a clean bill of health.
+ *       # ---------------------------------------------------------------------------
+ *       COLS = 13
+ *
+ *
+ *       def scrub(value):
+ *           """Field text can never contain the delimiters that frame it."""
+ *           return str(value).replace(FS, " ").replace(RS, " ")
+ *
+ *
+ *       def unpack(packed):
+ *           """Carrier rows, padded to COLS. Short rows come from an earlier stage."""
+ *           rows = []
+ *           for chunk in (packed or "").split(RS):
+ *               if chunk:
+ *                   rows.append((chunk.split(FS) + [""] * COLS)[:COLS])
+ *           return rows
+ *
+ *
+ *       def repack(rows):
+ *           return RS.join(FS.join(scrub(col) for col in row) for row in rows)
+ *
+ *
+ *       def upstream_packed(arg):
+ *           """The previous step's output, however the value edge chose to deliver it.
+ *
+ *           A whole stdout payload (a JSON object) and a bare `packed` scalar are both
+ *           accepted, so the step does not depend on whether the edge resolves
+ *           `.stdout.text` or `.stdout.json.packed`.
+ *           """
+ *           text = (arg or "").strip()
+ *           if not text.startswith("{"):
+ *               return text
+ *           try:
+ *               doc = json.loads(text)
+ *           except json.JSONDecodeError as exc:
+ *               die(f"upstream payload will not parse as JSON: {exc}")
+ *           if not isinstance(doc, dict):
+ *               die("upstream payload is not a JSON object")
+ *           return doc.get("packed", "")
+ *
+ *
+ *       def emit(payload):
+ *           sys.stdout.write(json.dumps(payload) + "\n")
+ *           raise SystemExit(0)
+ *
+ *
+ *       def classify(rec):
+ *           # An unfilled fact is UNKNOWN, never a clean bill of health. A stage that
+ *           # did not run must widen REVIEW; it must never narrow it, because the whole
+ *           # value of this Play is that "safe to bump" means somebody checked.
+ *           if rec.get("outdated_unknown"):
+ *               return "REVIEW", "version never resolved; status unknown"
+ *           if not rec.get("outdated"):
+ *               return "CURRENT", "already current"
+ *           if rec.get("direct_unknown"):
+ *               return "REVIEW", "call sites never scanned; status unknown"
+ *
+ *           direct = bool(rec.get("direct"))
+ *           checked = bool(rec.get("checked"))
+ *           breaking = bool(rec.get("breaking"))
+ *
+ *           if not direct:
+ *               return "SAFE", "not imported directly; transitive"
+ *           if breaking:
+ *               return "ACT", rec.get("markers") or "breaking changes in range"
+ *           if not checked:
+ *               why = rec.get("warning") or "release notes unavailable; status unknown"
+ *               # Markers found without reading the notes -- a major version bump -- are
+ *               # still evidence. Surfacing them keeps a degraded row informative
+ *               # without promoting it out of REVIEW.
+ *               if rec.get("markers"):
+ *                   why = f"{why} ({rec['markers']})"
+ *               return "REVIEW", why
+ *           return "SAFE", "notes read, no breaking markers"
+ *
+ *
+ *       def record_from_row(row):
+ *           """A carrier row as the record classify() expects, unknowns preserved."""
+ *           return {
+ *               "ecosystem": row[0],
+ *               "name": row[1],
+ *               "current": row[2],
+ *               "latest": row[3],
+ *               "gap": row[5] or "unknown",
+ *               "outdated": row[6] == "1",
+ *               "outdated_unknown": row[6] == "",
+ *               "direct": row[7] == "1",
+ *               "direct_unknown": row[7] == "",
+ *               "files": int(row[8]) if row[8].isdigit() else 0,
+ *               "first_site": row[9],
+ *               "checked": row[10] == "1",
+ *               "breaking": row[11] == "1",
+ *               "markers": row[12],
+ *           }
+ *
+ *
+ *       def read_records():
+ *           """Records from --batch, from a named file, or from stdin.
+ *
+ *           --batch is the form the Play uses: the upstream step's output arrives whole
+ *           as one argv scalar, so nothing has to exist on disk and the chain works on a
+ *           machine that has never seen this repository.
+ *           """
+ *           argv = sys.argv[1:]
+ *           if argv and argv[0] == "--batch":
+ *               if len(argv) < 2:
+ *                   die("usage: compute_verdict.py --batch <upstream payload>")
+ *               return [record_from_row(row) for row in unpack(upstream_packed(argv[1]))]
+ *
+ *           stream, opened = None, False
+ *           if argv:
+ *               try:
+ *                   stream, opened = open(argv[0], encoding="utf-8"), True
+ *               except OSError as exc:
+ *                   # A named file that cannot be read is a broken invocation, not an
+ *                   # expected absence: failing closed beats triaging zero dependencies
+ *                   # and reporting "nothing to triage".
+ *                   die(f"cannot read {argv[0]}: {exc}")
+ *           else:
+ *               stream = sys.stdin
+ *
+ *           records = []
+ *           for line_no, line in enumerate(stream, 1):
+ *               line = line.strip()
+ *               if not line:
+ *                   continue
+ *               try:
+ *                   records.append(json.loads(line))
+ *               except json.JSONDecodeError as exc:
+ *                   die(f"line {line_no} is not valid JSON: {exc}")
+ *           if opened:
+ *               stream.close()
+ *           return records
+ *
+ *
+ *       def render(rows, headline):
+ *           """A plain-text report, built here rather than in the Play body.
+ *
+ *           The Play's presentation layer has one job -- print this string -- so the
+ *           formatting is covered by the same tests as the ranking it presents.
+ *           """
+ *           if not rows:
+ *               return headline
+ *           width = {
+ *               "name": max(len(r["name"]) for r in rows),
+ *               "ver": max(len(f'{r["current"] or "-"} -> {r["latest"] or "-"}') for r in rows),
+ *               "gap": max(len(r["gap"]) for r in rows),
+ *           }
+ *           lines = [headline, ""]
+ *           for r in rows:
+ *               versions = f'{r["current"] or "-"} -> {r["latest"] or "-"}'
+ *               files = f'{r["files"]} file' + ("s" if r["files"] != 1 else "")
+ *               lines.append(
+ *                   f'  {r["tier"]:<7} {r["ecosystem"]:<6} {r["name"]:<{width["name"]}}  '
+ *                   f'{versions:<{width["ver"]}}  {r["gap"]:<{width["gap"]}}  '
+ *                   f'{files:>8}  {r["site"] or "-"}'.rstrip())
+ *               lines.append(f'  {"":<7} {r["why"]}')
+ *           return "\n".join(lines)
+ *
+ *
+ *       def main():
+ *           records = read_records()
+ *
+ *           if not records:
+ *               emit({
+ *                   "ok": True, "warning": "no dependency records on input",
+ *                   "total": 0, "act": 0, "review": 0, "safe": 0, "current": 0,
+ *                   "headline": "nothing to triage", "report": "nothing to triage",
+ *                   "packed": "",
+ *               })
+ *
+ *           rows = []
+ *           for rec in records:
+ *               tier, why = classify(rec)
+ *               rows.append({
+ *                   "tier": tier,
+ *                   "ecosystem": rec.get("ecosystem", "?"),
+ *                   "name": rec.get("name", "?"),
+ *                   "current": rec.get("current", ""),
+ *                   "latest": rec.get("latest", ""),
+ *                   "gap": rec.get("gap", "unknown"),
+ *                   "direct": bool(rec.get("direct")),
+ *                   "files": rec.get("files", 0),
+ *                   "why": why,
+ *                   "site": rec.get("first_site", ""),
+ *               })
+ *
+ *           rows.sort(key=lambda r: (ORDER[r["tier"]], GAP_WEIGHT.get(r["gap"], 9), r["name"]))
+ *           counts = {t: sum(1 for r in rows if r["tier"] == t) for t in ORDER}
+ *           outdated = counts["ACT"] + counts["REVIEW"] + counts["SAFE"]
+ *
+ *           if counts["ACT"]:
+ *               headline = (f"{counts['ACT']} of {len(rows)} dependencies have breaking changes "
+ *                           f"in code you actually call")
+ *           elif counts["REVIEW"]:
+ *               headline = (f"no confirmed breaking changes, but {counts['REVIEW']} "
+ *                           f"could not be verified")
+ *           elif outdated:
+ *               headline = f"{outdated} outdated, none of them breaking for your code"
+ *           else:
+ *               headline = "everything current"
+ *
+ *           packed = RS.join(FS.join([
+ *               r["tier"], r["ecosystem"], r["name"], r["current"] or "-", r["latest"] or "-",
+ *               r["gap"], str(r["files"]), r["why"], r["site"],
+ *           ]) for r in rows)
+ *
+ *           emit({
+ *               "ok": True,
+ *               "report": render(rows, headline),
+ *               "total": len(rows),
+ *               "act": counts["ACT"], "review": counts["REVIEW"],
+ *               "safe": counts["SAFE"], "current": counts["CURRENT"],
+ *               "outdated": outdated,
+ *               "headline": headline,
+ *               "packed": packed,
+ *           })
+ *
+ *
+ *       if __name__ == "__main__":
+ *           main()
+ *     - "--batch"
+ *     - "@read_changelogs{$.stdout.text | fromjson | .packed}"
  * ---
  */
 
-// The report is rendered by the final step, in Python, under test -- so this
-// body has one job. process.stdout.write, never console.log.
-const report = steps.rank_verdict.stdout.json.report;
-process.stdout.write((report || "nothing to triage") + "\n");
+const { FlowOutput, loadPresentationContext, stepName } =
+  await import("__ROTE_PRESENTATION_SDK__");
+
+type StageRow = { stage: string; label: string; state: string; note: string };
+type Verdict = {
+  total: number; act: number; review: number; safe: number; current: number;
+  headline: string; report: string; warning?: string;
+};
+
+const out = new FlowOutput();
+const ctx = await loadPresentationContext();
+
+const STAGES: Array<[string, string]> = [
+  ["find_dependencies", "manifests"],
+  ["resolve_versions", "registry"],
+  ["locate_callsites", "call sites"],
+  ["read_changelogs", "release notes"],
+  ["rank_verdict", "verdict join"],
+];
+const STEP_HANDLES = {
+  find_dependencies: ctx.step(stepName("find_dependencies")),
+  resolve_versions: ctx.step(stepName("resolve_versions")),
+  locate_callsites: ctx.step(stepName("locate_callsites")),
+  read_changelogs: ctx.step(stepName("read_changelogs")),
+  rank_verdict: ctx.step(stepName("rank_verdict")),
+};
+
+const bodyOf = (step: (typeof STEP_HANDLES)[keyof typeof STEP_HANDLES]): Record<string, unknown> | null => {
+  const outcome = step.outcome;
+  if (outcome.status !== "completed" && outcome.status !== "restored") return null;
+  const text = (outcome.output.body as { stdout?: { text?: string } })?.stdout?.text;
+  if (typeof text !== "string" || !text.trim()) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+// The ledger is not decoration. When a stage degrades -- a rate-limited
+// changelog read, an unreachable registry -- the rows it fed report REVIEW
+// rather than SAFE, and this is where you see why.
+const ledger: StageRow[] = [];
+for (const [id, label] of STAGES) {
+  const step = STEP_HANDLES[id as keyof typeof STEP_HANDLES];
+  const info = bodyOf(step);
+  const status = step.outcome.status;
+  let state: string;
+  let note = "";
+  if (info && (status === "completed" || status === "restored")) {
+    const degraded = typeof info["warning"] === "string";
+    state = degraded ? "degraded" : "ok";
+    note = degraded ? String(info["warning"]) : "";
+  } else if (status === "completed" || status === "restored") {
+    state = "degraded";
+    note = "unparseable output";
+  } else if (status === "skipped" || status === "blocked") {
+    state = status;
+    note = String((step.outcome.output as { reason?: string }).reason ?? "");
+  } else {
+    state = "failed";
+    note = String((step.outcome.output as { message?: string }).message ?? "").slice(0, 80);
+  }
+  ledger.push({ stage: id, label, state, note });
+}
+
+const GLYPH: Record<string, string> = {
+  ok: "████████",
+  degraded: "█████░░░",
+  skipped: "░░░░░░░░",
+  blocked: "░░░░░░░░",
+  failed: "░░░░░░░░",
+};
+
+const fallback: Verdict = {
+  total: 0, act: 0, review: 0, safe: 0, current: 0,
+  headline: "no verdict",
+  report: "The verdict join did not produce a report; see the stage ledger.",
+};
+const verdictBody = bodyOf(STEP_HANDLES.rank_verdict);
+const verdict: Verdict =
+  verdictBody && typeof verdictBody["report"] === "string"
+    ? (verdictBody as unknown as Verdict)
+    : fallback;
+
+const okCount = ledger.filter((r) => r.state === "ok").length;
+const bar = "█".repeat(Math.round((okCount / ledger.length) * 24)).padEnd(24, "░");
+
+const lines: string[] = [];
+lines.push(`UPGRADE IMPACT  ${String(ctx.params.root ?? ".")}`);
+lines.push("");
+lines.push(`  stages  ${bar}  ${okCount}/${ledger.length} ok`);
+for (const row of ledger) {
+  lines.push(`  ${GLYPH[row.state] ?? GLYPH.failed}  ${row.label.padEnd(16)}${row.state}${row.note ? ` — ${row.note}` : ""}`);
+}
+lines.push("");
+lines.push(verdict.report);
+lines.push("");
+lines.push("ACT = breaking changes in code you import directly. REVIEW = you import it,");
+lines.push("but the release notes could not be read, so nobody has checked. An unreadable");
+lines.push("changelog is never reported as SAFE.");
+
+out.human(lines.join("\n"));
+out.summary(verdict.headline);
+out.result({ run_id: ctx.run.run_id, stages: ledger, ...verdict });
