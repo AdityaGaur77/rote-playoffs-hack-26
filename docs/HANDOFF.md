@@ -1,6 +1,8 @@
 # upgrade-impact-triage — handoff
 
-Written 2026-09-03. Read this first if you are picking the project up cold.
+Written 2026-09-03, revised the same day (sections 5, 8 and 9 changed —
+problem 2 is solved and the Play is generated). Read this first if you are
+picking the project up cold.
 
 ---
 
@@ -77,7 +79,7 @@ simplification.
 | Machine setup | **done** |
 | Warm-up Plays (`hello` 9/9, `dns-propagation-check` 6/6) | **done** |
 | Recorded exploration (8 good captures) | **done** |
-| Crystallization (`main.ts` correct and portable) | **in progress — 4 known problems** |
+| Crystallization (`main.ts` correct and portable) | **generated — 3 rote syntax tokens left to confirm** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
 | Lint, release, publish | not started |
 
@@ -95,6 +97,37 @@ and it cannot be fixed late.
 Do **not** run `rote registry org create --slug hackathon`. The CLI suggests `org create`
 in its `@@next` hints, but creating an org named `hackathon` would squat the organizers'
 namespace and would still not make you a member of theirs.
+
+### How to tell when the invite has landed
+
+There is no push notification. The same command that reports the blocker is the
+one that reports the fix — poll it:
+
+```bash
+rote registry org list
+```
+
+Today: `ok: You are not a member of any organizations`. Once accepted, `hackathon`
+appears in that list. That is the only signal that matters, because it is the
+membership the publish step actually uses.
+
+Two other places worth a look, in order of usefulness:
+
+```bash
+rote registry whoami          # confirms which account the CLI is authenticated as
+rote play search --org hackathon
+```
+
+`whoami` matters because the invite goes to an email address and the CLI is
+authenticated as an account — if the Discord message named a different address
+than `adityagaur12077@gmail.com`, the invite can be accepted and `org list` still
+show nothing. Check the inbox for that address too; org invites are usually a
+mailed accept link, not something the CLI can accept for you.
+
+If `org list` still reports nothing an hour before the deadline, publish anyway
+under `adityagaur/upgrade-impact-triage`. A published Play outside the org still
+satisfies criteria 1–3, and the URL can be dropped in Discord for adoption. An
+unpublished Play satisfies none of them.
 
 ---
 
@@ -142,11 +175,17 @@ steps/find_callsites.py    <root> <ecosystem> <name>          -> direct, hits, f
 steps/fetch_changelog.py   <owner/repo> <current> <latest>    -> checked, breaking, markers
 steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if no path)
 tools/inline_steps.py      [--json]                           -> portable argv prefixes
-tests/test_steps.py                                           -> 93 tests
+tools/build_play.py        [--check]                          -> generates play/main.ts
+play/main.ts               generated, 64 KB                   -> the Play
+play/deps.toml                                                -> declares python3
+tests/test_steps.py                                           -> 121 tests
 smoke_test.sh
 ```
 
-`python3 -m pytest tests/ -q` → **89 passed, 4 skipped**. The 4 skips are opt-in live
+Every step after the first also has a `--batch` form taking the previous step's
+output as one argv scalar. That is the chain the Play runs; see section 8.
+
+`python3 -m pytest tests/ -q` → **117 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -242,90 +281,148 @@ would have shipped.** Lead the demo with it.
 
 ---
 
-## 8. The export, and the four problems
+## 8. The export, and where the six problems went
 
-```bash
-rote workspace export main.ts --params root
+The first export (`rote workspace export main.ts --params root`) wrote
+`/home/adity/.rote/flows/local-process/main.ts` and had six problems. Five are
+now closed in code; one is a question only the local rote install can answer.
+
+| # | Problem | State |
+|---|---|---|
+| 1 | `root` declared but never used; steps hardcoded `/home/adity/next-step-26` | **closed** — `root` is threaded into the two steps that take a path |
+| 2 | `/home/adity/records.jsonl` produced by no step | **closed** — see below |
+| 3 | Steps named `python3`, `python3_2` … `python3_9` | **closed** — `find_dependencies`, `resolve_versions`, `locate_callsites`, `read_changelogs`, `rank_verdict` |
+| 4 | Absolute script paths | **closed** — `tools/inline_steps.py` base64-inlines each script |
+| 5 | `description: ""` | **closed** — written, and asserted non-empty by a test |
+| 6 | Junk steps `@7`, `@9`, `@10` came through | **closed** — the Play is generated from a declared graph, not re-exported from the workspace |
+
+**Do not hand-edit `play/main.ts`.** It carries ~59 KB of base64, so a step fixed
+in `steps/` but not regenerated ships a Play that does something else.
+`python3 tools/build_play.py` writes it; `--check` fails if it is stale, and the
+test suite runs `--check`, so a stale Play is a test failure rather than a
+published surprise.
+
+### How problem 2 was solved
+
+`compute_verdict` read a records file that no step produced and that no
+stranger's machine has. The fix was not to add a step that writes the file —
+it was to remove the file.
+
+Every stage after the first now has a `--batch` form that takes the previous
+stage's stdout as **one argv scalar**:
+
+```
+find_dependencies   parse_manifest   <root>
+resolve_versions    fetch_registry   --batch <upstream>
+locate_callsites    find_callsites   --batch <root> <upstream>
+read_changelogs     fetch_changelog  --batch <upstream>
+rank_verdict        compute_verdict  --batch <upstream>
 ```
 
-Wrote `/home/adity/.rote/flows/local-process/main.ts` — 171 lines, 5257 bytes. Eleven
-`QueryRead` commands were dropped ("read-only query has no DAG step equivalent"), which
-is correct: a query is not a step.
+Stages share one 13-column carrier record. Each fills its own columns and passes
+the rest through, so nothing has to exist on disk and no stage needs to know how
+many dependencies there are — it works on any repository, not just the one it was
+recorded against.
 
-**What it got right:** `name: upgrade-impact-triage` in the frontmatter (only the
-*directory* is misnamed), `root` registered as a required parameter, `flow_type: parallel`,
-`execution_model: steps_with_presentation`, and four `depends_on:` blocks — so data-flow
-edges did survive.
-
-**What must be fixed before publishing:**
-
-| # | Problem | Why it matters |
+| Cols | Filled by | Fields |
 |---|---|---|
-| 1 | **`root` is declared but never used.** Steps hardcode `/home/adity/next-step-26` | The parameter is decorative — it runs against *your* repo whatever anyone passes |
-| 2 | **`/home/adity/records.jsonl` is produced by no step** | Structural. The join consumes a file that was hand-built; on a stranger's machine there is nothing to read. `compute_verdict` must be fed by value edges from `@1`–`@8` |
-| 3 | **Steps are named `python3`, `python3_2` … `python3_9`** | An unreadable DAG teaches an inspecting judge nothing |
-| 4 | **Absolute script paths** `/home/adity/rote-playoffs-hack-26/steps/*.py` | Fails criterion 2 on the first stranger's run |
-| 5 | `description: ""` | Empty. Judged on honest description |
-| 6 | Junk steps `@7`, `@9`, `@10` came through | rote's own `@@learn` warns against exporting trial-and-error workspaces |
+| 0–2 | `parse_manifest` | ecosystem, name, current |
+| 3–6 | `fetch_registry` | latest, repo, gap, outdated |
+| 7–9 | `find_callsites` | direct, files, first_site |
+| 10–12 | `fetch_changelog` | checked, breaking, markers |
 
-**Problem 4 is already solved** — `tools/inline_steps.py` base64-encodes each script and
-emits a `["python3", "-c", <program>]` argv prefix. Verified: arguments still land in
-`sys.argv[1:]`, stdout is byte-identical, and exit code 2 survives the transport (tested,
-because if fail-closed were lost an unreadable input would become a silent all-clear).
-38 KB of base64 across five steps. Run `python3 tools/inline_steps.py --json`.
+**The honesty invariant, applied to the pipeline itself.** Carrier booleans are
+`"1"` / `"0"` when known and `""` when the stage that fills them has not run.
+That third state is load-bearing: an unfilled column reads as UNKNOWN, never as
+a clean bill of health. Skip the registry stage and every row reports REVIEW
+rather than CURRENT. Skip the call-site stage and they report REVIEW rather than
+SAFE. **A stage that did not run can only widen REVIEW.** Six tests hold this
+down; do not "simplify" them away.
 
-**Problem 2 is the real work** and is not yet designed.
+The single-package forms are untouched, so captures `@1`–`@8` still describe
+what the scripts do.
+
+A stage accepts either a whole upstream payload or a bare `packed` scalar, so
+the steps do not depend on whether the value edge resolves `.stdout.text` or
+`.stdout.json.packed`. That was deliberate: it decouples the Python from the one
+question still open.
+
+### The three tokens still open
+
+These are rote's own syntax and cannot be settled from this repo. They are
+isolated as three constants at the top of `tools/build_play.py`:
+
+| Constant | Current guess | What it is |
+|---|---|---|
+| `PARAM` | `${root}` | how a declared parameter is interpolated into a step's argv |
+| `EDGE` | `@find_dependencies.stdout.text` | how one step references another's output |
+| `BODY_READ` | `steps.rank_verdict.stdout.json.report` | how the presentation body reads a step's output |
+
+`EDGE` follows the form recorded in section 9 step 2. `PARAM` and `BODY_READ`
+are guesses. Confirm all three, correct the constants, re-run `build_play.py`,
+and the whole 64 KB file is correct:
+
+```bash
+rote guidance play crystallization | cat
+```
+
+Faster, if it is still on the machine: read the warm-up Play that already used a
+parameter — `~/.rote/flows/dns-propagation-check/main.ts` — and copy its forms
+verbatim. A working example beats the reference.
+
+`rote play lint` will catch a wrong guess before anyone sees it.
+
+### Presentation lives in Python, not TypeScript
+
+`compute_verdict` emits a `report` field: the finished plain-text table. The
+Play body has one job — print that string. The formatting is therefore covered
+by the same test suite as the ranking it presents, and the amount of unverified
+TypeScript in the Play is two lines.
 
 ---
 
 ## 9. What to do next, in order
 
-1. **Discord — get the `hackathon` org invite.** Handle `adityagaur`, account
-   `adityagaur12077@gmail.com`. Everything else proceeds in parallel; only the final
-   publish is gated.
+1. **Discord — the `hackathon` org invite.** Handle `adityagaur`, account
+   `adityagaur12077@gmail.com`. The message is posted; section 3 says how to
+   tell when it lands. Everything below proceeds in parallel; only step 8 is
+   gated on it.
 
-2. **Read the step-language reference** before authoring. Unknowns that must be resolved:
-   how a parameter is interpolated into a step's `argv`, and how a value edge is written
-   (`@step{.path}` resolves against the unwrapped payload; for process steps the body is
-   `process.exec`, so `.stdout.text` — but the resolved value must be a **scalar**).
+2. **Confirm the three tokens** in `tools/build_play.py` (see section 8), then:
    ```bash
-   rote guidance play crystallization | cat
-   rote guidance shell essential | cat
+   python3 tools/build_play.py
    ```
-   Pipe to `cat` — `rote guidance` opens a pager that will eat anything you paste next.
+   Pipe `rote guidance` to `cat` — it opens a pager that will eat anything you
+   paste next.
 
-3. **Consider re-recording in a clean workspace.** rote's `@@learn` explicitly advises it,
-   and it removes problems 3 and 6 for free rather than patching a generated DAG. All eight
-   commands are known-good and run in under ten seconds. Keep the existing workspace until
-   the replacement exports cleanly.
-
-4. **Author `main.ts` properly** — real step names, `root` threaded through, the join fed by
-   edges, scripts inlined, description filled. Export to the path that names the flow:
+3. **Copy the Play into place and run it against the demo project.**
    ```bash
-   rote workspace export ~/.rote/flows/upgrade-impact-triage/main.ts --params root
-   ```
-
-5. **Write `~/.rote/flows/upgrade-impact-triage/deps.toml`** declaring `python3`. rote's
-   Common Mistakes list names a missing `deps.toml` explicitly. This is where "zero
-   preflight blockers" stops being a claim.
-
-6. **Test the negative space.** The failure behaviours are the product:
-   ```bash
+   mkdir -p ~/.rote/flows/upgrade-impact-triage
+   cp play/main.ts play/deps.toml ~/.rote/flows/upgrade-impact-triage/
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts root=/home/adity/next-step-26
+   ```
+   Expected: numpy and scipy both ACT, headline "2 of 2 dependencies have
+   breaking changes in code you actually call". **Lead the demo with scipy** —
+   section 7 says why.
+
+4. **Test the negative space.** The failure behaviours are the product:
+   ```bash
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts root=/tmp/empty-dir
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts 'root=!!'
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts --resume latest root=/home/adity/next-step-26
    ```
-   Expected absence should complete with a labelled degraded row. Bad input should fail
-   closed with dependents `BLOCKED` and a working `--resume`.
+   Empty directory should complete with "nothing to triage". Bad input should
+   fail closed with dependents `BLOCKED` and a working `--resume`. Both are
+   covered by tests at the script level; this checks rote propagates them.
 
-7. **Self-check the DAG.** "1 step · 1 layer" means a monolith was written:
+5. **Self-check the DAG.** "1 step · 1 layer" means a monolith got written; this
+   should report five steps in five layers.
    ```bash
    rote play run https://play.modiqo.ai/modiqo/play-dag play=./main.ts
    ```
 
-8. **Release.** Lint gates release; three-run QA, index rebuild and search verification are
-   all required before the release claim is legitimate:
+6. **Release.** Lint gates release; the three-run QA, index rebuild and search
+   verification are all required before the release claim is legitimate:
    ```bash
    rote play lint upgrade-impact-triage
    rote play release upgrade-impact-triage
@@ -333,21 +430,25 @@ because if fail-closed were lost an unreadable input would become a silent all-c
    rote play search upgrade-impact-triage
    ```
 
-9. **Publish and read back from a clean directory** — criterion 2 is *someone who is not you*:
+7. **Publish and read back from a clean directory** — criterion 2 is *someone
+   who is not you*:
    ```bash
    rote registry play push main.ts adityagaur
    cd /tmp && rote play run https://play.modiqo.ai/adityagaur/upgrade-impact-triage root=. --yes
    ```
 
-10. **Take the two multipliers.** A daily-habit Play that is literally scheduled daily
-    demonstrates criterion 1 instead of claiming it. And publishing early buys a week of
-    adoption:
-    ```bash
-    play recurring probe
-    play recurring schedule --reference adityagaur/upgrade-impact-triage@0.1.0 \
-      --cadence daily --why "Catch breaking upgrades before they land" --for 6d
-    play journey view --active
-    ```
+8. **Take the two multipliers.** A daily-habit Play that is literally scheduled
+   daily demonstrates criterion 1 instead of claiming it, and publishing early
+   buys a week of adoption:
+   ```bash
+   play recurring probe
+   play recurring schedule --reference adityagaur/upgrade-impact-triage@0.1.0 \
+     --cadence daily --why "Catch breaking upgrades before they land" --for 6d
+   play journey view --active
+   ```
+
+9. **Re-run `build_play.py` after any change to `steps/`.** The test suite will
+   tell you, but only if you run it.
 
 ---
 

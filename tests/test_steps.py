@@ -909,3 +909,69 @@ def test_delimiters_survive_the_inlined_transport(tmp_path):
     assert inlined.returncode == direct.returncode == 0, inlined.stderr
     assert json.loads(inlined.stdout) == json.loads(direct.stdout)
     assert json.loads(inlined.stdout)["act"] == 2
+
+
+# --- the rendered report --------------------------------------------------
+
+def test_report_lists_every_row_under_the_headline():
+    out = verdict(carrier(), carrier(name="requests", direct="0", files="0", site=""))
+    report = out["report"]
+    assert report.startswith(out["headline"])
+    assert "numpy" in report and "requests" in report
+    assert "1.26 -> 2.5.2" in report
+    assert "tests/mocks.py:13" in report
+    assert "not imported directly" in report
+
+
+def test_report_of_an_empty_run_is_just_the_headline():
+    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed": ""}')
+    out = json.loads(proc.stdout)
+    assert out["report"] == out["headline"] == "nothing to triage"
+
+
+def test_report_says_review_when_nothing_could_be_checked():
+    """The degraded run has to read as degraded, not as an all-clear."""
+    out = verdict(carrier(checked="", breaking="", markers=""))
+    assert "REVIEW" in out["report"]
+    assert "SAFE" not in out["report"]
+
+
+# --------------------------------------------------------------------------
+# The generated Play
+# --------------------------------------------------------------------------
+
+def test_the_published_play_is_not_stale():
+    """main.ts carries the step scripts as base64, so a step change that is
+    tested here but never regenerated ships a Play that does something else."""
+    proc = subprocess.run(
+        [sys.executable, os.path.join(os.path.dirname(HERE), "tools", "build_play.py"),
+         "--check"],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_the_play_carries_no_local_path():
+    """Criterion 2: it has to run for someone who is not the author."""
+    with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
+        play = handle.read()
+    for local in ("/home/adity", "/home/user", "records.jsonl", "next-step-26"):
+        assert local not in play, f"main.ts still references {local}"
+    assert ".py" not in play, "main.ts still points at a script file"
+
+
+def test_the_play_declares_a_real_description_and_one_parameter():
+    with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
+        play = handle.read()
+    assert 'description: ""' not in play
+    assert "- name: root" in play
+    assert "*/" not in play.split("---\n */")[0].replace("/**", "", 1)
+
+
+def test_every_step_in_the_play_has_a_readable_name():
+    """python3_7 teaches an inspecting judge nothing."""
+    with open(os.path.join(os.path.dirname(HERE), "play", "main.ts")) as handle:
+        play = handle.read()
+    for name in ("find_dependencies", "resolve_versions", "locate_callsites",
+                 "read_changelogs", "rank_verdict"):
+        assert f" *   {name}:" in play
+    assert "python3_" not in play

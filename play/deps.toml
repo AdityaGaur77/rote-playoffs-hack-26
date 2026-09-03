@@ -1,0 +1,15 @@
+# Runtime dependencies for upgrade-impact-triage.
+#
+# This is the whole list. Every step is standard-library Python -- json, os,
+# re, sys, time, urllib and nothing else -- and the scripts are inlined into
+# main.ts rather than fetched, so there is no install step and nothing to
+# resolve. That is the adoption argument: a machine that can run rote can run
+# this Play, with no preflight.
+#
+# GITHUB_TOKEN is deliberately NOT declared. It is optional -- it only raises
+# the GitHub API rate limit from 60/hr to 5000/hr -- and leaving it undeclared
+# is what lets `rote play inspect` report "Authentication: none". Without it
+# the Play still runs and simply reports more REVIEW rows.
+
+[deps]
+python3 = ">=3.8"

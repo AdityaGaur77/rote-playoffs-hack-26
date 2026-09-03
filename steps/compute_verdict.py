@@ -182,6 +182,31 @@ def read_records():
     return records
 
 
+def render(rows, headline):
+    """A plain-text report, built here rather than in the Play body.
+
+    The Play's presentation layer has one job -- print this string -- so the
+    formatting is covered by the same tests as the ranking it presents.
+    """
+    if not rows:
+        return headline
+    width = {
+        "name": max(len(r["name"]) for r in rows),
+        "ver": max(len(f'{r["current"] or "-"} -> {r["latest"] or "-"}') for r in rows),
+        "gap": max(len(r["gap"]) for r in rows),
+    }
+    lines = [headline, ""]
+    for r in rows:
+        versions = f'{r["current"] or "-"} -> {r["latest"] or "-"}'
+        files = f'{r["files"]} file' + ("s" if r["files"] != 1 else "")
+        lines.append(
+            f'  {r["tier"]:<7} {r["ecosystem"]:<6} {r["name"]:<{width["name"]}}  '
+            f'{versions:<{width["ver"]}}  {r["gap"]:<{width["gap"]}}  '
+            f'{files:>8}  {r["site"] or "-"}'.rstrip())
+        lines.append(f'  {"":<7} {r["why"]}')
+    return "\n".join(lines)
+
+
 def main():
     records = read_records()
 
@@ -189,7 +214,8 @@ def main():
         emit({
             "ok": True, "warning": "no dependency records on input",
             "total": 0, "act": 0, "review": 0, "safe": 0, "current": 0,
-            "headline": "nothing to triage", "packed": "",
+            "headline": "nothing to triage", "report": "nothing to triage",
+            "packed": "",
         })
 
     rows = []
@@ -230,6 +256,7 @@ def main():
 
     emit({
         "ok": True,
+        "report": render(rows, headline),
         "total": len(rows),
         "act": counts["ACT"], "review": counts["REVIEW"],
         "safe": counts["SAFE"], "current": counts["CURRENT"],

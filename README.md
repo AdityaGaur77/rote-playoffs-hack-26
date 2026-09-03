@@ -38,7 +38,20 @@ recorded exploration so the trace comes out in the right shape.
 | `steps/fetch_registry.py <eco> <name> [current]` | One dependency, one registry reading: latest version, major/minor/patch gap, GitHub source repo |
 | `steps/fetch_changelog.py <owner/repo> <cur> <latest>` | Read release notes in the version range and judge them breaking |
 | `steps/find_callsites.py <root> <eco> <name>` | Is it imported directly, and where — the step that separates this from Dependabot |
-| `steps/compute_verdict.py` | Join everything from stdin JSONL into the ranked verdict |
+| `steps/compute_verdict.py [records.jsonl]` | Join everything into the ranked verdict and render the report |
+
+Each of the four later scripts also has a `--batch` form that takes the *previous step's output*
+as one argv scalar, so the Play runs as a chain with nothing on disk between steps:
+
+```
+parse_manifest <root>
+  -> fetch_registry  --batch <upstream>
+  -> find_callsites  --batch <root> <upstream>
+  -> fetch_changelog --batch <upstream>
+  -> compute_verdict --batch <upstream>
+```
+
+The single-package forms are unchanged; `--batch` is what makes the Play portable.
 
 ### Step contract
 
@@ -51,6 +64,27 @@ stdout is data, exit status is the failure signal. Collections cross step bounda
 delimited scalar (`chr(31)` fields, `chr(30)` records) because value-edge jq must resolve to a
 scalar. Standard library only, so `deps.toml` declares `python3` and nothing else — no adapter,
 no credentials, no declared writes, so a stranger runs it in one command.
+
+### The carrier record
+
+`--batch` stages share one 13-column record. Each fills its own columns and passes the rest
+through:
+
+| Cols | Filled by | Fields |
+|---|---|---|
+| 0–2 | `parse_manifest` | ecosystem, name, current |
+| 3–6 | `fetch_registry` | latest, repo, gap, outdated |
+| 7–9 | `find_callsites` | direct, files, first_site |
+| 10–12 | `fetch_changelog` | checked, breaking, markers |
+
+Booleans are `"1"` / `"0"` when known and **`""` when the stage that fills them has not run**.
+That third state is load-bearing and it is the honesty invariant applied to the pipeline itself: an
+unfilled column reads as UNKNOWN, never as a clean bill of health. Skip the registry stage and
+every row reports REVIEW rather than CURRENT; skip the call-site stage and they report REVIEW
+rather than SAFE. A stage that did not run can only widen REVIEW.
+
+A stage accepts either a whole upstream payload or a bare `packed` scalar, so the steps do not
+depend on whether the value edge resolves `.stdout.text` or `.stdout.json.packed`.
 
 ## Try it
 
@@ -76,7 +110,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-93 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+121 tests — 117 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 
@@ -102,6 +136,24 @@ Base64 keeps the encoded body free of quotes and shell metacharacters, and argum
 `sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
 assert the inlined and file forms produce identical output and identical exit codes, including the
 fail-closed path.
+
+## The Play itself
+
+`play/main.ts` is **generated, never hand-edited** — it carries ~59 KB of base64, and a step fixed
+here but not regenerated there ships a Play that does something else.
+
+```bash
+python3 tools/build_play.py            # write play/main.ts
+python3 tools/build_play.py --check    # fail if a step changed since it was generated
+```
+
+The `--check` form runs in the test suite, so a stale Play is a test failure rather than a
+published surprise. `play/deps.toml` declares `python3` and nothing else.
+
+Three constants at the top of `tools/build_play.py` — parameter interpolation, value-edge
+reference, and how the presentation body reads a step's output — are rote's own syntax and must be
+confirmed against the local install (`rote guidance play crystallization | cat`) before the first
+publish. Everything else in the file is mechanical.
 
 ## Optional GITHUB_TOKEN
 
@@ -132,10 +184,11 @@ Kept because each one would have shipped silently:
 
 ## Status
 
-The analysis payload is complete and tested. `fetch_changelog.py`'s *success* path is the one
-unverified piece — the GitHub API was unreachable from the machine it was developed on, so its
-parsing, version-range filtering and every degrade path are tested but the happy path needs one
-run where GitHub is reachable.
+The analysis payload is complete and tested, and the Play is generated end to end from it. The
+five-stage chain has been run against a live PyPI and a stub GitHub API, and every failure mode —
+empty upstream, malformed upstream, bad root, rate limit, a stage skipped entirely — is covered.
 
-Remaining: install rote (see [`docs/SETUP.md`](docs/SETUP.md)), run the recorded exploration, and
-publish. See [`docs/PLAN.md`](docs/PLAN.md).
+Remaining before publishing: confirm the three rote syntax constants in `tools/build_play.py`, run
+`rote play lint` and `rote play release`, and get into the `hackathon` org. See
+[`docs/HANDOFF.md`](docs/HANDOFF.md) for the ordered list and [`docs/PLAN.md`](docs/PLAN.md) for
+the reasoning.
