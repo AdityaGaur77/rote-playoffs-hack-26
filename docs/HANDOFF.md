@@ -77,6 +77,7 @@ simplification.
 | Research and Play selection | **done** |
 | Analysis payload (5 scripts, 93 tests) | **done** |
 | Machine setup | **done** |
+| Play generated and frontmatter verified on the target machine (Python 3.14) | **done** |
 | Warm-up Plays (`hello` 9/9, `dns-propagation-check` 6/6) | **done** |
 | Recorded exploration (8 good captures) | **done** |
 | Crystallization (`main.ts` correct and portable) | **done — generated, syntax confirmed, frontmatter parses** |
@@ -429,10 +430,12 @@ TypeScript in the Play is two lines.
    embedded source, `python3 tools/build_play.py --base64` falls back to the
    opaque form.
 
-3. **Copy the Play into place and run it against the demo project.**
+3. **Copy the Play into place and run it against the demo project.** Address it by path, not
+   by name, until the stale `local-process` export is out of `~/.rote/flows/` — see section 10.
    ```bash
    mkdir -p ~/.rote/flows/upgrade-impact-triage
    cp play/main.ts play/deps.toml ~/.rote/flows/upgrade-impact-triage/
+   rote play lint ~/.rote/flows/upgrade-impact-triage/main.ts
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts root=/home/adity/next-step-26
    ```
    Expected: numpy and scipy both ACT, headline "2 of 2 dependencies have
@@ -496,6 +499,16 @@ TypeScript in the Play is two lines.
   workspace directory captures nothing.
 - **`rote workspace export <output>` takes a file path, and its directory names the flow.**
   Passing a bare `main.ts` produced a flow called `local-process`.
+- **A flow's *name* comes from its frontmatter, not its directory**, so the stale `local-process`
+  export claimed `upgrade-impact-triage` too and every command that takes a name became
+  ambiguous:
+  ```
+  error: flow reference `upgrade-impact-triage` is ambiguous — 2 flows match
+  ```
+  `rote play lint|run` also accept a **file path**, which is the way through without touching
+  anything. To clear it for good, move the stale export out of `~/.rote/flows/` and
+  `rote play index --rebuild`. Deleting is not necessary and the old export is the only copy of
+  what section 8 describes.
 - **A process-only workspace uses plain `workspace export`.** `rote play pending write` is
   the pending-save route for *mixed* adapter/process/browser workspaces and will push you
   toward declaring an adapter you do not have.
