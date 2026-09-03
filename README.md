@@ -63,6 +63,12 @@ does everything would make rote record a single opaque step with no edges — no
 parallelize, checkpoint, resume, or blame per source. During the recorded exploration each
 reading gets its own `rote proc run` capture, so independent readings become parallel root steps.
 
+## Picking this up cold
+
+`docs/HANDOFF.md` is the full state of the project: the goal, what is done, the four
+remaining problems with the exported play, the exact next steps, and the gotchas that
+cost time. Read it before touching anything.
+
 ## Tests
 
 ```bash
