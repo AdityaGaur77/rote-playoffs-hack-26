@@ -110,7 +110,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-136 tests — 132 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
+137 tests — 133 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 
@@ -164,8 +164,10 @@ parameter is a bare `$root`, a value edge is `@step{$.stdout.text | fromjson | .
 published file is `@resource{name.py}`, and the body reads step outputs through the presentation
 SDK (`loadPresentationContext`, `ctx.step(stepName(...))`, `out.human()`).
 
-`play/deps.toml` declares `python3` and nothing else, in the schema rote accepts —
-`schema_version` plus `[[tools]]`, not a `[deps]` table.
+`play/deps.toml` declares `python3` and nothing else, in the schema rote accepts — `schema_version`
+plus `[[tools]]`, not a `[deps]` table — with `[[tools.install]]` candidates for brew and apt.
+`rote play release` treats a required tool with no install candidate as a share blocker, because a
+recipient without it otherwise learns they are stuck and nothing about how to get unstuck.
 
 `tools/make_fixtures.py` builds the presentation fixtures from a real run's durable input. It
 packages only stdout and stderr: the recorded body also carries cwd, invocation, artifact paths and

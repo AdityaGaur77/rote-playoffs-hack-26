@@ -2,8 +2,12 @@
 #
 # This is the whole list. Every step is standard-library Python -- json, os,
 # re, sys, time, urllib and nothing else -- so there is no install step and
-# nothing to resolve. That is the adoption argument: a machine that can run
-# rote can run this Play, with no preflight.
+# nothing to resolve beyond the interpreter itself.
+#
+# [[tools.install]] is not optional. `rote play release` reports a required
+# tool with no install candidate as a share blocker, and it is right to: a
+# recipient without python3 otherwise learns they are blocked and nothing about
+# how to proceed. One entry per manager that can supply it.
 #
 # GITHUB_TOKEN is deliberately NOT declared. It is optional -- it only raises
 # the GitHub API rate limit from 60/hr to 5000/hr -- and leaving it undeclared
@@ -17,3 +21,11 @@ id = "python3"
 command = "python3"
 required = true
 version_requirement = ">=3.8"
+
+[[tools.install]]
+manager = "brew"
+package = "python@3"
+
+[[tools.install]]
+manager = "apt"
+package = "python3"

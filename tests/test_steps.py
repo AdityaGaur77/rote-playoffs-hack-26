@@ -1167,3 +1167,22 @@ def test_the_play_declares_fixtures_once_they_exist():
             assert os.path.exists(os.path.join(os.path.dirname(HERE), "play", target)), target
     else:
         assert "presentation_fixtures:" not in play
+
+
+def test_every_required_tool_has_an_install_candidate():
+    """`rote play release` calls a required tool with no install candidate a
+    share blocker: the recipient learns they are stuck and nothing about how to
+    get unstuck. That is judging criterion 4, so it is a test."""
+    tomllib = pytest.importorskip("tomllib")
+    with open(os.path.join(os.path.dirname(HERE), "play", "deps.toml"), "rb") as handle:
+        manifest = tomllib.load(handle)
+    for tool in manifest["tools"]:
+        if not tool.get("required"):
+            continue
+        candidates = tool.get("install") or []
+        assert candidates, f"{tool['id']} is required with no install candidate"
+        managers = {c["manager"] for c in candidates}
+        assert {"brew", "apt"} <= managers, (
+            f"{tool['id']} should offer at least brew and apt: got {sorted(managers)}")
+        for candidate in candidates:
+            assert candidate.get("package") or candidate.get("command"), candidate

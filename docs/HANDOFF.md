@@ -86,10 +86,10 @@ simplification.
 | **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
 | Negative space (absence, hard fault, blocking) | **passes — see section 7** |
 | Presentation fixtures | **done** — from `run_20260904_001502.667_0` |
-| `rote play release` | **released** — but readiness **blocked**, see below |
+| `rote play release` | **released**; readiness blocker fixed — re-release to clear it |
 | Publish | not started |
 
-### Release readiness — one blocker
+### Release readiness — fixed
 
 `rote play release` passed every gate (static, human/summary/json runtime) and
 the Play is released and indexed. But:
@@ -102,10 +102,34 @@ warning: this released play is not ready to hand to someone else
 ```
 
 This is criterion 4 directly — a recipient who lacks `python3` is told they need
-it and nothing else. The reference for the field is
-`rote guidance shell essential` (Dependency Manifests), and the working example
-on this machine is `~/.rote/flows/modiqo/dns-propagation-check/deps.toml`,
-which declares `dig`.
+it and nothing else. The fix is `[[tools.install]]`, one entry per manager that
+can supply the tool:
+
+```toml
+[[tools]]
+id = "python3"
+command = "python3"
+required = true
+version_requirement = ">=3.8"
+
+[[tools.install]]
+manager = "brew"
+package = "python@3"
+
+[[tools.install]]
+manager = "apt"
+package = "python3"
+```
+
+Taken verbatim from `~/.rote/flows/modiqo/dns-propagation-check/deps.toml`,
+which declares the same interpreter, so the manager and package names are known
+good rather than guessed. Use `command = [...]` instead of `package` when the
+install is not `<manager> install <package>`. A test now asserts every required
+tool carries at least a brew and an apt candidate.
+
+`version_requirement` is checked by probing the binary's own version flags; a
+version that cannot be inferred passes as unverified rather than failing, so it
+costs nothing.
 
 Note also rote's own parting advice: **"release is not proof: run the play
 against real inputs before reporting completion."**
@@ -225,14 +249,14 @@ tools/make_fixtures.py     <input.json>                       -> presentation fi
 play/main.ts               generated, 7 KB                    -> the Play
 play/resources/*.py        published copies of steps/         -> named by @resource{}
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 136 tests
+tests/test_steps.py                                           -> 137 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **132 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **133 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -731,6 +755,9 @@ TypeScript in the Play is two lines.
   password field; the account password always fails with "Password authentication is not
   supported". The username is bare `AdityaGaur77` — a leading space or `@` shows up
   URL-encoded as `%20%40` and fails before the token is even checked.
+- **Never paste a Play's own output back into the shell.** The report contains `->`, which bash
+  reads as a redirect: pasting the ACT rows created files named `2.5.2` and `1.18.1` in the repo
+  root. `git rm` them if they got committed.
 - **Handles are immutable.** `adityagaur` is locked in — that was a one-shot.
 - **Capture is never retrospective.** Work begun outside the workspace cannot be
   crystallized. Recorder first, every time.
