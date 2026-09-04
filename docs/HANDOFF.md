@@ -84,6 +84,7 @@ simplification.
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
 | `rote play lint` | **passes** — one informational finding, presentation fixtures (section 9 step 4) |
 | **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
+| Negative space (absence, hard fault, blocking) | **passes — see section 7** |
 | Release, publish | not started |
 
 ### The blocker
@@ -197,17 +198,18 @@ steps/find_callsites.py    <root> <ecosystem> <name>          -> direct, hits, f
 steps/fetch_changelog.py   <owner/repo> <current> <latest>    -> checked, breaking, markers
 steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if no path)
 tools/build_play.py        [--check]                          -> generates the Play
+tools/make_fixtures.py     <input.json>                       -> presentation fixtures
 play/main.ts               generated, 7 KB                    -> the Play
 play/resources/*.py        published copies of steps/         -> named by @resource{}
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 129 tests
+tests/test_steps.py                                           -> 136 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **125 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **132 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -286,6 +288,46 @@ scipy  1.11  -> 1.18.1  minor    2 files   incompatible, migration-guide, no-lon
 ```
 
 `@11` headline: **"2 of 2 dependencies have breaking changes in code you actually call"**
+
+### The negative space, run against the real Play — 2026-09-04
+
+The failure behaviours are the product, and `rote guidance play testing` asks
+for exactly these.
+
+**Expected absence** (`root=/tmp/empty-dir`) — completes, and says so explicitly
+in both the human output and the ledger rather than fabricating a default:
+
+```
+  stages  ░░░░░░░░░░░░░░░░░░░░░░░░  0/5 ok
+  █████░░░  manifests       degraded — no supported manifest found under /tmp/empty-dir
+  █████░░░  registry        degraded — no dependencies on input
+  █████░░░  call sites      degraded — no dependencies on input
+  █████░░░  release notes   degraded — no dependencies on input
+  █████░░░  verdict join    degraded — no dependency records on input
+
+nothing to triage
+```
+
+**Hard fault** (`root=/nope/does/not/exist`) — fails rather than rendering a
+degraded-looking success, and every dependent is blocked for a stated reason:
+
+```
+  find_dependencies  FAILED (@11 exit 2; parse_manifest: root is not a directory: ...)
+  resolve_versions   BLOCKED (upstream failed)
+  ...
+  Summary: 0/5 completed, 1 failed, 4 blocked
+  Retry: rerun this play with --resume run_20260904_001658.861_10
+error: 1 step(s) failed.
+```
+
+That is the fail-closed path holding end to end: an unreadable input produces a
+failure, never a silent all-clear. Note the presentation still rendered — the
+ledger reports `failed` and `blocked` rather than an empty success.
+
+**Recovery** — `--resume` was exercised and completed 5/5, but against a
+different `root` than the failed run, so it started fresh rather than reusing
+work. Reuse itself is still unproven. To test it properly, fail a *later* step
+and resume that same run id.
 
 ### The Play produced it for real — 2026-09-04
 
@@ -541,32 +583,42 @@ TypeScript in the Play is two lines.
    breaking changes in code you actually call". **Lead the demo with scipy** —
    section 7 says why.
 
-4. **Presentation fixtures.** Lint passes without them but says coverage is
-   incomplete:
-   ```
-   i [PRESENTATION_FIXTURE_REQUIRED] data-bearing steps ... have no representative fixture
-   ```
-   The material comes from the run in step 3. **The durable input is written
-   relative to the package workspace root you ran from, not to `~/.rote/`** —
-   `~/.rote/presentation/` does not exist:
-   ```bash
-   find ~/rote-playoffs-hack-26 ~/.rote -type f -name input.json -path '*presentation*'
-   ```
-   Extract the single observation at `steps.<name>.outcome.output.body` and
-   package **only** the representative process stdout/stderr — not the whole
-   recorded body, which carries cwd, invocation, artifact paths and environment.
-   Each resource is capped at 1 MiB.
+4. **Presentation fixtures.** Lint passes without them but reports coverage as
+   incomplete, and `presentation_fixtures:` feeds quality scoring. The evidence
+   must come from a real run — lint will not fabricate a process body.
 
-   Declare it through the typed top-level `presentation_fixtures:` map. **Not**
-   `fixtures:` — that is outside the play schema and is ignored by execution and
-   by quality scoring. The map's shape and the reserved fixture subtree are
-   owned by:
+   The durable input lives under the **DAG workspace**, not `~/.rote/` and not
+   the repo:
    ```bash
-   rote grammar steps | cat
+   find ~/.rote/workspaces -type f -name input.json -path '*presentation*'
    ```
-   Fixtures participate in package identity, so re-run lint and preserve
-   identity *before* release. `build_play.py` should generate the declaration
-   once its shape is known, the same way it generates everything else.
+   Pick a run where all five steps completed, then:
+   ```bash
+   python3 tools/make_fixtures.py ~/.rote/workspaces/dag-upgrade-impact-triage-4f8ffc5f/.rote/presentation/run_20260904_001502.667_0/input.json
+   python3 tools/build_play.py
+   ```
+   `make_fixtures.py` packages **only** stdout and stderr. The recorded body
+   also carries cwd, invocation, artifact paths and environment, and a test
+   plants a fake token in each of those to prove none of it reaches the Play.
+   `build_play.py` declares the map only once the files exist, because a
+   declaration with a missing target is a lint error.
+
+   The shape, from `rote grammar steps`:
+   ```yaml
+   presentation_fixtures:
+     rank_verdict: resources/presentation-fixtures/rank_verdict/fixture.yaml
+   ```
+   ```yaml
+   schema_version: 1
+   kind: process.exec
+   status:
+     exit: { kind: code, code: 0 }
+     duration_ms: 30
+     timeout_ms: 15000
+   stdout: resources/presentation-fixtures/rank_verdict/stdout.json
+   stderr: resources/presentation-fixtures/rank_verdict/stderr.txt
+   ```
+   Fixtures participate in package identity, so lint again before release.
 
 5. **Test the negative space.** The failure behaviours are the product:
    ```bash

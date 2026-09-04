@@ -24,6 +24,10 @@ and someone inspecting the Play reads the steps as ordinary Python files.
 The generator verifies its own output: it parses the frontmatter as YAML and
 asserts no argv element breaks the inline limit, which is the rule that caught
 the previous design.
+
+Presentation fixtures are declared only when their files exist -- a declaration
+with a missing target is a lint error, and the evidence comes from a real run
+via tools/make_fixtures.py, never from anything synthesised here.
 """
 import json
 import os
@@ -36,6 +40,7 @@ STEPS = os.path.join(ROOT, "steps")
 PLAY = os.path.join(ROOT, "play")
 OUT = os.path.join(PLAY, "main.ts")
 RESOURCES = os.path.join(PLAY, "resources")
+FIXTURES = os.path.join(RESOURCES, "presentation-fixtures")
 
 # rote's inline-argv limit, from the lint rule that rejected the previous design.
 ARGV_LIMIT = 256
@@ -172,8 +177,24 @@ def frontmatter():
             lines += [f"    - {parent}" for parent in parents]
         lines.append("    argv:")
         lines += [f"    - {json.dumps(arg)}" for arg in argv_for(script, spec, parents)]
+
+    # Declared only when the evidence exists. A declaration whose target is
+    # missing is a lint error, and the evidence comes from a real run
+    # (tools/make_fixtures.py), not from anything this file can synthesise.
+    if fixtures_present():
+        lines.append("presentation_fixtures:")
+        for step, *_ in GRAPH:
+            lines.append(f"  {step}: resources/presentation-fixtures/{step}/fixture.yaml")
     lines.append("---")
     return lines
+
+
+def fixtures_present():
+    """True when every step has a complete fixture triple on disk."""
+    return all(
+        os.path.exists(os.path.join(FIXTURES, step, name))
+        for step, *_ in GRAPH
+        for name in ("fixture.yaml", "stdout.json", "stderr.txt"))
 
 
 def body():
@@ -336,7 +357,7 @@ def write_resources():
     os.makedirs(RESOURCES, exist_ok=True)
     wanted = {f"{script}.py" for _step, script, *_rest in GRAPH}
     for name in sorted(os.listdir(RESOURCES)):
-        if name not in wanted:
+        if name not in wanted and name != "presentation-fixtures":
             os.remove(os.path.join(RESOURCES, name))
     for _step, script, *_rest in GRAPH:
         shutil.copyfile(os.path.join(STEPS, f"{script}.py"),
@@ -355,7 +376,7 @@ def resources_current():
         with open(published, encoding="utf-8") as handle:
             if handle.read() != source_of(script):
                 return False, f"play/resources/{script}.py differs from steps/{script}.py"
-    extra = sorted(set(os.listdir(RESOURCES)) - wanted)
+    extra = sorted(set(os.listdir(RESOURCES)) - wanted - {"presentation-fixtures"})
     if extra:
         return False, f"play/resources/ carries files no step names: {extra}"
     return True, ""
@@ -392,6 +413,12 @@ def main():
     published = write_resources()
     print(f"wrote {os.path.relpath(OUT, ROOT)}  ({len(text):,} bytes, {len(GRAPH)} steps)")
     print(f"wrote {os.path.relpath(RESOURCES, ROOT)}/  ({len(published)} scripts)")
+    if fixtures_present():
+        print(f"declared presentation_fixtures for {len(GRAPH)} steps")
+    else:
+        print("no presentation fixtures yet — lint will report "
+              "PRESENTATION_FIXTURE_REQUIRED.\n"
+              "  build them from a run: python3 tools/make_fixtures.py <input.json>")
 
 
 if __name__ == "__main__":

@@ -1069,3 +1069,101 @@ def test_the_deps_manifest_uses_the_schema_rote_accepts():
     assert manifest["schema_version"] == 1
     assert [t["command"] for t in manifest["tools"]] == ["python3"]
     assert all(t["required"] for t in manifest["tools"])
+
+
+# --------------------------------------------------------------------------
+# tools/make_fixtures — presentation evidence, taken from a real run
+# --------------------------------------------------------------------------
+
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+import make_fixtures                # noqa: E402
+
+
+def _recorded(status="completed", stdout='{"ok": true}\n', stderr=""):
+    """A recorded body shaped like the durable presentation input."""
+    return {"steps": {step: {"outcome": {
+        "status": status,
+        "output": {"body": {
+            "stdout": {"text": stdout},
+            "stderr": {"text": stderr},
+            "status": {"duration_ms": 42},
+            # Everything below must stay out of the published Play.
+            "cwd": "/home/someone/private",
+            "invocation": ["python3", "/home/someone/private/step.py"],
+            "artifacts": {"stderr": "/home/someone/.rote/artifacts/x"},
+            "environment": {"GITHUB_TOKEN": "ghp_do_not_publish"},
+        }},
+    }} for step, _timeout in make_fixtures.STEPS}}
+
+
+def _make(tmp_path, doc, monkeypatch):
+    source = tmp_path / "input.json"
+    source.write_text(json.dumps(doc))
+    out = tmp_path / "fixtures"
+    monkeypatch.setattr(make_fixtures, "FIXTURES", str(out))
+    monkeypatch.setattr(sys, "argv", ["make_fixtures.py", str(source)])
+    make_fixtures.main()
+    return out
+
+
+def test_fixtures_package_only_the_streams(tmp_path, monkeypatch, capsys):
+    """The recorded body carries cwd, invocation and environment. None of it ships."""
+    out = _make(tmp_path, _recorded(), monkeypatch)
+    packaged = ""
+    for step, _timeout in make_fixtures.STEPS:
+        for name in ("fixture.yaml", "stdout.json", "stderr.txt"):
+            packaged += (out / step / name).read_text()
+    for secret in ("ghp_do_not_publish", "/home/someone/private", "invocation",
+                   "environment", "artifacts"):
+        assert secret not in packaged, f"{secret} leaked into the fixtures"
+
+
+def test_fixture_manifest_matches_the_documented_shape(tmp_path, monkeypatch, capsys):
+    out = _make(tmp_path, _recorded(), monkeypatch)
+    manifest = (out / "rank_verdict" / "fixture.yaml").read_text()
+    assert "schema_version: 1" in manifest
+    assert "kind: process.exec" in manifest
+    assert "exit: { kind: code, code: 0 }" in manifest
+    assert "timeout_ms: 15000" in manifest          # matches the step's declared budget
+    assert "stdout: resources/presentation-fixtures/rank_verdict/stdout.json" in manifest
+    assert "stderr: resources/presentation-fixtures/rank_verdict/stderr.txt" in manifest
+
+
+def test_an_empty_stderr_is_an_empty_file(tmp_path, monkeypatch, capsys):
+    """"An empty stream is observed only when its referenced resource is empty.\""""
+    out = _make(tmp_path, _recorded(stderr=""), monkeypatch)
+    assert (out / "rank_verdict" / "stderr.txt").read_text() == ""
+
+
+def test_a_failed_run_is_refused_as_evidence(tmp_path, monkeypatch):
+    """A process fixture represents a completed observation; exit must be 0."""
+    with pytest.raises(SystemExit) as excinfo:
+        _make(tmp_path, _recorded(status="failed"), monkeypatch)
+    assert excinfo.value.code == 2
+
+
+def test_an_empty_stdout_is_refused_as_evidence(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as excinfo:
+        _make(tmp_path, _recorded(stdout="   \n"), monkeypatch)
+    assert excinfo.value.code == 2
+
+
+def test_fixture_timeouts_agree_with_the_declared_step_budgets():
+    """A manifest that claims a budget the step does not have is evidence of nothing."""
+    import build_play
+    assert dict(make_fixtures.STEPS) == {
+        step: timeout for step, _script, timeout, _spec, _parents in build_play.GRAPH}
+
+
+def test_the_play_declares_fixtures_once_they_exist():
+    """Declared only when present — a declaration with a missing target is a lint error."""
+    import build_play
+    play = _play()
+    if build_play.fixtures_present():
+        doc = _frontmatter(play)
+        declared = doc.get("presentation_fixtures") or {}
+        assert set(declared) == {step for step, *_ in build_play.GRAPH}
+        for step, target in declared.items():
+            assert os.path.exists(os.path.join(os.path.dirname(HERE), "play", target)), target
+    else:
+        assert "presentation_fixtures:" not in play
