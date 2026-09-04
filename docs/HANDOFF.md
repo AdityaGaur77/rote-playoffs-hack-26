@@ -99,6 +99,19 @@ Privileged access  process
 *Authentication: none* is what the decision to leave `GITHUB_TOKEN` undeclared
 bought. A stranger sees no credential request at all.
 
+### Scheduled daily — 2026-09-04
+
+`play recurring schedule` id `30dfkq33`, active, cron `30 7 * * *` (14:30 UTC),
+expires 2026-09-07, why *"Catch breaking upgrades before they land"*. Criterion
+1 demonstrated rather than claimed; `play journey view --active` opens a local
+map of it on 127.0.0.1.
+
+**One caveat:** the schedule records `"cwd": null` and its argv passes no
+`root`, which falls back to the parameter default `.`. Whatever directory the
+scheduler runs from is what gets triaged. Check with `play recurring schedule
+--help` whether parameters can be pinned; a run against a real project reads
+far better than one that reports "nothing to triage".
+
 What remains is adoption, and one note from the release output worth carrying:
 **a process play under a personal handle is public but not team-runnable the way
 an org play is.** If the `hackathon` invite ever lands, republishing there is
