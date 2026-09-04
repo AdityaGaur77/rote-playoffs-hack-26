@@ -166,8 +166,27 @@ Fix once with `wsl --set-default Ubuntu` from PowerShell.
 ## 5. The repo
 
 **github.com/AdityaGaur77/rote-playoffs-hack-26**
-Branch `claude/upgrade-impact-triage-publish-l2wtmk`, PR #1 (draft), head `eaab837`,
-base `main` at `dd7b37b`. No CI configured, so no checks run.
+
+> **Work on `claude/rote-playoffs-handoff-2q99rf`.** Everything below — `tools/`,
+> `play/`, the `--batch` forms, 129 tests — is on that branch and nowhere else.
+> Checking out `claude/upgrade-impact-triage-publish-l2wtmk` gets you the analysis
+> payload and a repo with no `tools/build_play.py`, which fails confusingly:
+> ```
+> python3: can't open file '.../tools/build_play.py': [Errno 2] No such file or directory
+> ```
+> ```bash
+> git checkout claude/rote-playoffs-handoff-2q99rf && git pull
+> python3 -m pytest tests/ -q          # 125 passed, 4 skipped
+> ```
+
+| Branch | Contains | PR |
+|---|---|---|
+| `claude/rote-playoffs-handoff-2q99rf` | **the Play** — `play/`, `tools/build_play.py`, `--batch` chain, this doc | #2 → the publish branch |
+| `claude/upgrade-impact-triage-publish-l2wtmk` | analysis payload only, 89 tests | #1 → `main` |
+| `main` | `dd7b37b` | — |
+
+Both PRs are drafts and no CI is configured, so no checks run. Merging #2 into the
+publish branch would collapse the two into one and remove this trap entirely.
 
 ```
 steps/parse_manifest.py    <root>                             -> deps found in manifests
