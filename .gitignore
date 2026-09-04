@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# rote run data: presentation inputs carry cwd, invocation and environment
+.rote/
+.rote-flow-lint.json

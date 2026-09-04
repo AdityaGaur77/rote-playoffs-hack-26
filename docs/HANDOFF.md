@@ -82,7 +82,8 @@ simplification.
 | Recorded exploration (8 good captures) | **done** |
 | Crystallization (`main.ts` correct and portable) | **done — generated, syntax confirmed, frontmatter parses** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
-| `rote play lint` | **passes** — one informational finding, presentation fixtures (section 9 step 5) |
+| `rote play lint` | **passes** — one informational finding, presentation fixtures (section 9 step 4) |
+| **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
 | Release, publish | not started |
 
 ### The blocker
@@ -285,6 +286,33 @@ scipy  1.11  -> 1.18.1  minor    2 files   incompatible, migration-guide, no-lon
 ```
 
 `@11` headline: **"2 of 2 dependencies have breaking changes in code you actually call"**
+
+### The Play produced it for real — 2026-09-04
+
+`rote play run ... root=/home/adity/next-step-26`, run_id `run_20260904_001502.667_0`:
+
+```
+  [layer 1]  find_dependencies  @1  (30ms)
+  [layer 2]  resolve_versions   @2  (668ms)
+  [layer 3]  locate_callsites   @3  (51ms)
+  [layer 4]  read_changelogs    @4  (2.6s)
+  [layer 5]  rank_verdict       @5  (30ms)
+  Summary: 5/5 completed, 0 failed, 0 blocked   Duration: 3.5s
+
+  stages  ████████████████████████  5/5 ok
+
+2 of 2 dependencies have breaking changes in code you actually call
+
+  ACT     pypi   numpy  1.26 -> 2.5.2   major  14 files  tests/mocks.py:13
+          breaking-change,incompatible,no-longer,removal,rename
+  ACT     pypi   scipy  1.11 -> 1.18.1  minor   2 files  src/ecoslice/fem.py:8
+          incompatible,migration-guide,no-longer,rename
+```
+
+Five steps in five layers, so the DAG is a real graph and not a monolith. Every
+piece of rote syntax that could have been wrong is now confirmed by execution
+rather than by inference: `$root`, `@step{...}` edges, `@resource{}`, the
+presentation SDK body, and the stage ledger.
 
 **scipy is the story.** It is a *minor* bump — the kind everyone bumps blind, and the kind
 Dependabot reports as routine. But v1.14, v1.15, v1.16, v1.17 and v1.18 each carry
@@ -518,16 +546,27 @@ TypeScript in the Play is two lines.
    ```
    i [PRESENTATION_FIXTURE_REQUIRED] data-bearing steps ... have no representative fixture
    ```
-   The material comes from the run in step 3. Copy the intended observation out
-   of `.rote/presentation/<run-id>/input.json`
-   (`steps.<name>.outcome.output.body`), put representative evidence under
-   `resources/presentation-fixtures/`, and declare it in `presentation_fixtures:`.
-   Read the lifecycle first — the declaration shape is not guessable:
+   The material comes from the run in step 3. **The durable input is written
+   relative to the package workspace root you ran from, not to `~/.rote/`** —
+   `~/.rote/presentation/` does not exist:
    ```bash
-   rote guidance play testing | cat
+   find ~/rote-playoffs-hack-26 ~/.rote -type f -name input.json -path '*presentation*'
    ```
-   `build_play.py` should generate the declaration once its shape is known, the
-   same way it generates everything else.
+   Extract the single observation at `steps.<name>.outcome.output.body` and
+   package **only** the representative process stdout/stderr — not the whole
+   recorded body, which carries cwd, invocation, artifact paths and environment.
+   Each resource is capped at 1 MiB.
+
+   Declare it through the typed top-level `presentation_fixtures:` map. **Not**
+   `fixtures:` — that is outside the play schema and is ignored by execution and
+   by quality scoring. The map's shape and the reserved fixture subtree are
+   owned by:
+   ```bash
+   rote grammar steps | cat
+   ```
+   Fixtures participate in package identity, so re-run lint and preserve
+   identity *before* release. `build_play.py` should generate the declaration
+   once its shape is known, the same way it generates everything else.
 
 5. **Test the negative space.** The failure behaviours are the product:
    ```bash
@@ -601,6 +640,10 @@ TypeScript in the Play is two lines.
   toward declaring an adapter you do not have.
 - **`rote detect` cannot run here.** It needs an action ID, which only exists after an HTTP
   request. A pure `process.exec` workspace never creates one. Use `rote workspace health`.
+- **`rote grammar steps` is the authority on step syntax** — `depends_on`, `$param`, `@step{…}`,
+  `for_each` fan-out, conditions, concurrency, timeouts — and on the `presentation_fixtures:` map.
+  `rote guidance typescript play-creation` owns the presentation body and the `FlowOutput`
+  contract. Reach for those before inferring anything.
 - **`rote guidance` opens a pager.** Anything pasted while it is open goes into the pager,
   then gets executed as mangled commands when it exits. Always `| cat`.
 - **Never paste multi-line blocks containing `#` comments or `<placeholders>`.** Both were
