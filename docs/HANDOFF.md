@@ -82,7 +82,8 @@ simplification.
 | Recorded exploration (8 good captures) | **done** |
 | Crystallization (`main.ts` correct and portable) | **done — generated, syntax confirmed, frontmatter parses** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
-| Lint, release, publish | not started |
+| `rote play lint` | **passes** — one informational finding, presentation fixtures (section 9 step 5) |
+| Release, publish | not started |
 
 ### The blocker
 
@@ -512,7 +513,23 @@ TypeScript in the Play is two lines.
    breaking changes in code you actually call". **Lead the demo with scipy** —
    section 7 says why.
 
-4. **Test the negative space.** The failure behaviours are the product:
+4. **Presentation fixtures.** Lint passes without them but says coverage is
+   incomplete:
+   ```
+   i [PRESENTATION_FIXTURE_REQUIRED] data-bearing steps ... have no representative fixture
+   ```
+   The material comes from the run in step 3. Copy the intended observation out
+   of `.rote/presentation/<run-id>/input.json`
+   (`steps.<name>.outcome.output.body`), put representative evidence under
+   `resources/presentation-fixtures/`, and declare it in `presentation_fixtures:`.
+   Read the lifecycle first — the declaration shape is not guessable:
+   ```bash
+   rote guidance play testing | cat
+   ```
+   `build_play.py` should generate the declaration once its shape is known, the
+   same way it generates everything else.
+
+5. **Test the negative space.** The failure behaviours are the product:
    ```bash
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts root=/tmp/empty-dir
    rote play run ~/.rote/flows/upgrade-impact-triage/main.ts 'root=!!'
@@ -522,13 +539,13 @@ TypeScript in the Play is two lines.
    fail closed with dependents `BLOCKED` and a working `--resume`. Both are
    covered by tests at the script level; this checks rote propagates them.
 
-5. **Self-check the DAG.** "1 step · 1 layer" means a monolith got written; this
+6. **Self-check the DAG.** "1 step · 1 layer" means a monolith got written; this
    should report five steps in five layers.
    ```bash
    rote play run https://play.modiqo.ai/modiqo/play-dag play=./main.ts
    ```
 
-6. **Release.** Lint gates release; the three-run QA, index rebuild and search
+7. **Release.** Lint gates release; the three-run QA, index rebuild and search
    verification are all required before the release claim is legitimate:
    ```bash
    rote play lint upgrade-impact-triage
@@ -537,14 +554,14 @@ TypeScript in the Play is two lines.
    rote play search upgrade-impact-triage
    ```
 
-7. **Publish and read back from a clean directory** — criterion 2 is *someone
+8. **Publish and read back from a clean directory** — criterion 2 is *someone
    who is not you*:
    ```bash
    rote registry play push main.ts adityagaur
    cd /tmp && rote play run https://play.modiqo.ai/adityagaur/upgrade-impact-triage root=. --yes
    ```
 
-8. **Take the two multipliers.** A daily-habit Play that is literally scheduled
+9. **Take the two multipliers.** A daily-habit Play that is literally scheduled
    daily demonstrates criterion 1 instead of claiming it, and publishing early
    buys a week of adoption:
    ```bash
@@ -554,7 +571,7 @@ TypeScript in the Play is two lines.
    play journey view --active
    ```
 
-9. **Re-run `build_play.py` after any change to `steps/`.** The test suite will
+10. **Re-run `build_play.py` after any change to `steps/`.** The test suite will
    tell you, but only if you run it.
 
 ---
