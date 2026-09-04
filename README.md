@@ -63,6 +63,18 @@ does everything would make rote record a single opaque step with no edges — no
 parallelize, checkpoint, resume, or blame per source. During the recorded exploration each
 reading gets its own `rote proc run` capture, so independent readings become parallel root steps.
 
+## The join takes its input from the DAG, not from a file
+
+`compute_verdict.py --from-steps '<json>' '<json>' ...` folds the raw stdout of the upstream
+steps into one record per dependency, so the join can be fed by value edges instead of a
+records file somebody built by hand. Registry and call-site payloads are matched on
+`(ecosystem, name)`; changelog payloads only know a repository, so they are joined on the
+`repo` the registry step reported.
+
+A dependency whose call sites were never scanned comes back `REVIEW`, not `SAFE` — an absent
+`direct` flag means nobody looked, and this Play never reports an unknown as an all-clear.
+The file and `--from-steps` forms are asserted to produce identical output.
+
 ## Picking this up cold
 
 `docs/HANDOFF.md` is the full state of the project: the goal, what is done, the four
@@ -76,7 +88,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-93 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+102 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 

@@ -670,3 +670,116 @@ def test_inlined_form_preserves_a_failing_exit_code():
     assert proc.returncode == 2
     assert "cannot read" in proc.stderr
     assert proc.stdout == ""
+
+
+# --------------------------------------------------------------------------
+# compute_verdict --from-steps — the join fed by DAG edges, not a stray file
+# --------------------------------------------------------------------------
+
+def _registry_payload(name, **over):
+    rec = {"ok": True, "ecosystem": "pypi", "name": name, "current": "1.0",
+           "latest": "2.0", "repo": f"{name}/{name}", "gap": "major",
+           "outdated": True, "prerelease": False}
+    rec.update(over)
+    return json.dumps(rec)
+
+
+def _callsites_payload(name, direct=True, sites=(("src/app.py", "7", "import x"),)):
+    return json.dumps({
+        "ok": True, "ecosystem": "pypi", "name": name, "direct": direct,
+        "hits": len(sites) if direct else 0, "files": len(sites) if direct else 0,
+        "scanned": 23,
+        "packed": RS.join(FS.join(s) for s in sites) if direct else "",
+    })
+
+
+def _notes_payload(repo, checked=True, breaking=True, markers="removal"):
+    return json.dumps({"ok": True, "repo": repo, "current": "1.0", "latest": "2.0",
+                       "checked": checked, "breaking": breaking,
+                       "markers": markers if breaking else "", "packed": ""})
+
+
+def _from_steps(*blobs):
+    proc = run("compute_verdict.py", "--from-steps", *blobs)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_step_outputs_merge_into_the_same_verdict_as_a_records_file(tmp_path):
+    """The DAG form and the file form must not disagree."""
+    merged = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy"),
+                         _notes_payload("numpy/numpy"))
+
+    path = tmp_path / "records.jsonl"
+    path.write_text(json.dumps({
+        "ecosystem": "pypi", "name": "numpy", "current": "1.0", "latest": "2.0",
+        "gap": "major", "outdated": True, "direct": True, "files": 1,
+        "checked": True, "breaking": True, "markers": "removal",
+        "first_site": "src/app.py:7"}) + "\n")
+    from_file = json.loads(run("compute_verdict.py", str(path)).stdout)
+
+    assert merged == from_file
+
+
+def test_changelog_joins_on_the_repo_the_registry_reported():
+    """Changelog payloads know a repo, never a package name."""
+    out = _from_steps(_registry_payload("scipy"), _callsites_payload("scipy"),
+                      _notes_payload("scipy/scipy"))
+    row = unpack(out["packed"])[0]
+    assert row[0] == "ACT"
+    assert "removal" in row[7]
+
+
+def test_an_unscanned_dependency_is_review_never_safe():
+    """Nobody looked for call sites. That is an unknown, not an all-clear."""
+    out = _from_steps(_registry_payload("numpy"), _notes_payload("numpy/numpy"))
+
+    assert out["safe"] == 0
+    assert out["review"] == 1
+    assert unpack(out["packed"])[0][0] == "REVIEW"
+    assert "not scanned" in unpack(out["packed"])[0][7]
+
+
+def test_a_scanned_but_unimported_dependency_is_safe():
+    """The contrast: find_callsites ran and said no. That IS an all-clear."""
+    out = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy", direct=False),
+                      _notes_payload("numpy/numpy"))
+    assert out["safe"] == 1
+    assert unpack(out["packed"])[0][0] == "SAFE"
+
+
+def test_first_call_site_is_carried_through_from_the_packed_rows():
+    out = _from_steps(_registry_payload("numpy"),
+                      _callsites_payload("numpy", sites=(("src/fem.py", "8", "import numpy"),
+                                                 ("tests/t.py", "1", "import numpy"))),
+                      _notes_payload("numpy/numpy"))
+    assert unpack(out["packed"])[0][8] == "src/fem.py:8"
+
+
+def test_the_manifest_summary_is_ignored_rather_than_counted():
+    """parse_manifest's output names no single dependency."""
+    manifest = json.dumps({"ok": True, "count": 1, "manifests": "pyproject.toml",
+                           "ecosystems": "pypi", "packed": ""})
+    out = _from_steps(manifest, _registry_payload("numpy"), _callsites_payload("numpy"),
+                      _notes_payload("numpy/numpy"))
+    assert out["total"] == 1
+
+
+def test_unreadable_notes_leave_a_direct_dependency_in_review():
+    out = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy"),
+                      _notes_payload("numpy/numpy", checked=False, breaking=False))
+    assert out["review"] == 1
+    assert out["safe"] == 0
+
+
+def test_a_malformed_step_payload_fails_closed():
+    proc = run("compute_verdict.py", "--from-steps", _registry_payload("numpy"), "{not json")
+    assert proc.returncode == 2
+    assert "not valid JSON" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_no_step_outputs_is_an_honest_nothing_to_triage():
+    out = _from_steps()
+    assert out["total"] == 0
+    assert out["headline"] == "nothing to triage"
