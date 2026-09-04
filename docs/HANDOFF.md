@@ -77,7 +77,7 @@ simplification.
 | Machine setup | **done** |
 | Warm-up Plays (`hello` 9/9, `dns-propagation-check` 6/6) | **done** |
 | Recorded exploration (8 good captures) | **done** |
-| Crystallization (`main.ts` correct and portable) | **in progress — 4 known problems** |
+| Crystallization (`main.ts` correct and portable) | **in progress — the structural problem is solved, the rest is mechanical** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
 | Lint, release, publish | not started |
 
@@ -142,11 +142,11 @@ steps/find_callsites.py    <root> <ecosystem> <name>          -> direct, hits, f
 steps/fetch_changelog.py   <owner/repo> <current> <latest>    -> checked, breaking, markers
 steps/compute_verdict.py   [records.jsonl]                    -> tiers (stdin if no path)
 tools/inline_steps.py      [--json]                           -> portable argv prefixes
-tests/test_steps.py                                           -> 93 tests
+tests/test_steps.py                                           -> 102 tests
 smoke_test.sh
 ```
 
-`python3 -m pytest tests/ -q` → **89 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **98 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours
@@ -184,6 +184,7 @@ Each would have shipped silently.
 | 8 | `fetch_changelog` success path untested | GitHub was unreachable from the authoring container. Fixed with `GITHUB_API_BASE` + a localhost stub server, 8 tests |
 | 9 | Bug 5 **survived in `fetch_changelog`** | Matches began on blank lines, so quoted samples came back empty |
 | 10 | Prereleases double-counted | `v2.4.0` and `v2.4.0rc1` reported identical findings. **Worse: the 12-sample cap filled with rc duplicates, so the v2.0.0 major-bump evidence never appeared in the output at all** |
+| 12 | **`classify()` read an absent `direct` as "not imported" → `SAFE`** | A dependency whose call sites were never scanned would have been reported as an all-clear. Found while building the DAG join. Records now carry `scanned`; unscanned means `REVIEW` |
 | 11 | `compute_verdict` was stdin-only | Awkward to capture. Now takes a JSONL path, falls back to stdin, and fails closed (exit 2) on an unreadable named file |
 
 Bug 10 is the cautionary tale: it looked cosmetic and was actually hiding the headline.
@@ -262,7 +263,7 @@ edges did survive.
 | # | Problem | Why it matters |
 |---|---|---|
 | 1 | **`root` is declared but never used.** Steps hardcode `/home/adity/next-step-26` | The parameter is decorative — it runs against *your* repo whatever anyone passes |
-| 2 | **`/home/adity/records.jsonl` is produced by no step** | Structural. The join consumes a file that was hand-built; on a stranger's machine there is nothing to read. `compute_verdict` must be fed by value edges from `@1`–`@8` |
+| 2 | ~~`/home/adity/records.jsonl` is produced by no step~~ | **SOLVED** — see below |
 | 3 | **Steps are named `python3`, `python3_2` … `python3_9`** | An unreadable DAG teaches an inspecting judge nothing |
 | 4 | **Absolute script paths** `/home/adity/rote-playoffs-hack-26/steps/*.py` | Fails criterion 2 on the first stranger's run |
 | 5 | `description: ""` | Empty. Judged on honest description |
@@ -274,7 +275,23 @@ emits a `["python3", "-c", <program>]` argv prefix. Verified: arguments still la
 because if fail-closed were lost an unreadable input would become a silent all-clear).
 38 KB of base64 across five steps. Run `python3 tools/inline_steps.py --json`.
 
-**Problem 2 is the real work** and is not yet designed.
+**Problem 2 is solved.** `compute_verdict.py --from-steps '<json>' '<json>' ...` folds the
+raw stdout of the upstream steps into one record per dependency, so the join hangs off value
+edges instead of a hand-built file. Each blob is one argv scalar, which is exactly the shape
+the step language wants. Verified against the real payloads from captures @1–@8: it
+reproduces `@11` exactly — `2 of 2 dependencies have breaking changes in code you actually
+call`, both rows `ACT`, markers and first call site intact.
+
+Merging exposed a genuine hole while it was being built: `classify()` read an absent `direct`
+flag as falsy and returned `SAFE`, so a dependency whose call sites were never scanned would
+have been reported as an all-clear — the one thing this Play must never do. Records now carry
+`scanned` (defaulting true, so hand-written records behave as before) and an unscanned
+dependency returns `REVIEW`.
+
+So the remaining work is now **mechanical**: real step names, `root` threaded through,
+scripts inlined via `tools/inline_steps.py`, description filled, junk steps dropped. The
+join step becomes one `process.exec` whose argv is `python3 -c <inlined> --from-steps`
+followed by a value edge per upstream step.
 
 ---
 
