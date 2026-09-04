@@ -86,9 +86,31 @@ simplification.
 | **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
 | Negative space (absence, hard fault, blocking) | **passes — see section 7** |
 | Presentation fixtures | **done** — from `run_20260904_001502.667_0` |
-| Release, publish | not started |
+| `rote play release` | **released** — but readiness **blocked**, see below |
+| Publish | not started |
 
-### The blocker
+### Release readiness — one blocker
+
+`rote play release` passed every gate (static, human/summary/json runtime) and
+the Play is released and indexed. But:
+
+```
+warning: this released play is not ready to hand to someone else
+  Blocker: `python3` is declared as required with no install candidate, so a
+  recipient learns they need it and nothing about how to get it
+  Fix: rote guidance shell essential   # declare an install candidate in deps.toml
+```
+
+This is criterion 4 directly — a recipient who lacks `python3` is told they need
+it and nothing else. The reference for the field is
+`rote guidance shell essential` (Dependency Manifests), and the working example
+on this machine is `~/.rote/flows/modiqo/dns-propagation-check/deps.toml`,
+which declares `dig`.
+
+Note also rote's own parting advice: **"release is not proof: run the play
+against real inputs before reporting completion."**
+
+### The org blocker
 
 ```
 $ rote registry org list
@@ -702,6 +724,13 @@ TypeScript in the Play is two lines.
   then gets executed as mangled commands when it exits. Always `| cat`.
 - **Never paste multi-line blocks containing `#` comments or `<placeholders>`.** Both were
   mangled by bash repeatedly. One bare command per line.
+- **Set `git config user.name` / `user.email` before the first commit.** Without them `git commit`
+  aborts with "empty ident name", and the next `git pull --rebase` blames uncommitted changes
+  instead — two confusing errors from one missing setting.
+- **GitHub has not accepted passwords for git since 2021.** Use a Personal Access Token in the
+  password field; the account password always fails with "Password authentication is not
+  supported". The username is bare `AdityaGaur77` — a leading space or `@` shows up
+  URL-encoded as `%20%40` and fails before the token is even checked.
 - **Handles are immutable.** `adityagaur` is locked in — that was a one-shot.
 - **Capture is never retrospective.** Work begun outside the workspace cannot be
   crystallized. Recorder first, every time.
