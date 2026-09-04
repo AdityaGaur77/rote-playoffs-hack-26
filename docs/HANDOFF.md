@@ -112,6 +112,31 @@ scheduler runs from is what gets triaged. Check with `play recurring schedule
 --help` whether parameters can be pinned; a run against a real project reads
 far better than one that reports "nothing to triage".
 
+### Two solutions to problem 2 — and why this branch keeps its own
+
+A parallel session (`session_01DLVAcF2L1XyTKavD6xB1EZ`) solved the join problem
+independently on the publish branch as `compute_verdict --from-steps`, and the
+base branch was merged into this one on 2026-09-04. Both designs are sound and
+they found the same bug independently — an absent `direct` reading as falsy and
+returning SAFE, which is the one thing this Play must never do.
+
+| | `--from-steps` (publish branch) | `--batch` carrier (this branch, published) |
+|---|---|---|
+| Shape | fan-in: every step's stdout as a separate argv scalar, folded by `(ecosystem, name)` | linear: one 13-column record enriched stage by stage |
+| DAG | keeps per-package steps parallel | five steps, five layers |
+| Changelog join | on `repo`, so a monorepo's packages share one reading | per package, batched |
+| Unknown `direct` | `scanned` flag, defaulting true for hand-written records | empty carrier column, unknown by construction |
+| Run end to end | not yet | 5/5 against a real project |
+| Lint | not run | zero findings |
+| Published | no | **yes — `adityagaur/upgrade-impact-triage@0.1.0`** |
+
+The merge resolved to this branch's implementation for one reason: the Play in
+the registry carries it. A repo that describes a different implementation from
+the one strangers are running is worse than either design. Their commits remain
+in history through the merge parent, so nothing is lost if the fan-in shape is
+preferred later — it is a better DAG on paper, with more parallelism, and worth
+revisiting after the deadline.
+
 ### 0.1.1 — naming a truncated stage
 
 rote cuts a step's stdout at 65,536 bytes and still records the step as
