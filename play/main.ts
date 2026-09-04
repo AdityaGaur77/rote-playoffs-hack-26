@@ -97,6 +97,12 @@
  *     - "@resource{compute_verdict.py}"
  *     - "--batch"
  *     - "@read_changelogs{$.stdout.text | fromjson | .packed}"
+ * presentation_fixtures:
+ *   find_dependencies: resources/presentation-fixtures/find_dependencies/fixture.yaml
+ *   resolve_versions: resources/presentation-fixtures/resolve_versions/fixture.yaml
+ *   locate_callsites: resources/presentation-fixtures/locate_callsites/fixture.yaml
+ *   read_changelogs: resources/presentation-fixtures/read_changelogs/fixture.yaml
+ *   rank_verdict: resources/presentation-fixtures/rank_verdict/fixture.yaml
  * ---
  */
 
