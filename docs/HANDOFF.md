@@ -82,9 +82,10 @@ simplification.
 | Recorded exploration (8 good captures) | **done** |
 | Crystallization (`main.ts` correct and portable) | **done — generated, syntax confirmed, frontmatter parses** |
 | `hackathon` org membership | **BLOCKED — not a member of any org** |
-| `rote play lint` | **passes** — one informational finding, presentation fixtures (section 9 step 4) |
+| `rote play lint` | **passes clean — zero findings** |
 | **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
 | Negative space (absence, hard fault, blocking) | **passes — see section 7** |
+| Presentation fixtures | **done** — from `run_20260904_001502.667_0` |
 | Release, publish | not started |
 
 ### The blocker
@@ -583,9 +584,10 @@ TypeScript in the Play is two lines.
    breaking changes in code you actually call". **Lead the demo with scipy** —
    section 7 says why.
 
-4. **Presentation fixtures.** Lint passes without them but reports coverage as
-   incomplete, and `presentation_fixtures:` feeds quality scoring. The evidence
-   must come from a real run — lint will not fabricate a process body.
+4. **Presentation fixtures — done.** Lint reports zero findings with them in
+   place. Rebuild only if a step's output shape changes; `presentation_fixtures:`
+   feeds quality scoring, and the evidence must come from a real run because
+   lint will not fabricate a process body.
 
    The durable input lives under the **DAG workspace**, not `~/.rote/` and not
    the repo:
