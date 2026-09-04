@@ -7,11 +7,13 @@ what lands on stderr, and the exit status.
 Network tests are opt-in — run with ROTE_NET_TESTS=1 to exercise the live npm,
 PyPI and crates.io endpoints. Off by default so the suite stays hermetic.
 """
+import http.server
 import itertools
 import json
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -19,9 +21,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(os.path.dirname(HERE), "steps")
 sys.path.insert(0, STEPS)
 
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+
 import compute_verdict          # noqa: E402
 import fetch_changelog          # noqa: E402
 import fetch_registry           # noqa: E402
+import inline_steps             # noqa: E402
 import parse_manifest           # noqa: E402
 
 FS = chr(31)
@@ -33,10 +38,11 @@ needs_net = pytest.mark.skipif(
 )
 
 
-def run(script, *args, stdin=None):
+def run(script, *args, stdin=None, env=None):
     proc = subprocess.run(
         [sys.executable, os.path.join(STEPS, script), *args],
         capture_output=True, text=True, input=stdin,
+        env={**os.environ, **env} if env else None,
     )
     return proc
 
@@ -231,9 +237,259 @@ def test_missing_repo_reports_unknown_not_safe():
     assert "cannot read release notes" in out["warning"]
 
 
+# --- fetch_changelog: the success path, against a stub GitHub API ----------
+#
+# The live GitHub API is unreachable from some networks (and rate-limits the
+# rest), so the path that actually reads release notes is exercised against a
+# local stub via GITHUB_API_BASE. Everything below the socket is the real code.
+
+class _StubHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):                                     # noqa: N802
+        status, headers, body = self.server.reply
+        if not self.path.startswith("/repos/"):
+            status, headers, body = 404, {}, b"{}"
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):                         # keep pytest output clean
+        pass
+
+
+class _Stub:
+    def __init__(self, server):
+        self._server = server
+        host, port = server.server_address[:2]
+        self.base = f"http://{host}:{port}"
+
+    def reply(self, payload, status=200, headers=None):
+        body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self._server.reply = (status, headers or {}, body)
+
+    @property
+    def env(self):
+        return {"GITHUB_API_BASE": self.base, "GITHUB_TOKEN": ""}
+
+
+@pytest.fixture
+def github_stub():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.reply = (200, {}, b"[]")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield _Stub(server)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _release(tag, body="Fixed a typo.", draft=False):
+    return {"tag_name": tag, "body": body, "draft": draft}
+
+
+def _changelog(stub, current, latest):
+    proc = run("fetch_changelog.py", "numpy/numpy", current, latest, env=stub.env)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_read_notes_report_breaking_with_samples(github_stub):
+    github_stub.reply([
+        _release("v1.27.0", "BREAKING CHANGE: dropped the `foo()` helper"),
+        _release("v1.26.5", "Fixed a typo."),          # at current, out of range
+        _release("v2.0.0", "See the migration guide before upgrading"),
+    ])
+    out = _changelog(github_stub, "1.26.5", "2.0.0")
+
+    assert out["ok"] is True
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert out["releases"] == 2                        # v1.26.5 is excluded
+    assert set(out["markers"].split(",")) == {"breaking-change", "migration-guide"}
+
+    samples = unpack(out["packed"])
+    assert [row[0] for row in samples] == ["v1.27.0", "v2.0.0"]
+    assert all(len(row) == 3 and row[2] for row in samples)
+
+
+def test_read_notes_on_a_clean_minor_bump_report_not_breaking(github_stub):
+    github_stub.reply([_release("v1.27.0"), _release("v1.28.0", "Added an optional flag.")])
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["checked"] is True
+    assert out["breaking"] is False
+    assert out["releases"] == 2
+    assert out["markers"] == ""
+    assert out["packed"] == ""
+
+
+def test_clean_notes_never_clear_a_major_bump(github_stub):
+    """Silence in the notes does not out-vote the major version number."""
+    github_stub.reply([_release("v2.0.0", "Performance improvements.")])
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert out["markers"] == "major-version-bump"
+    assert "major version changed" in out["note"]
+
+
+def test_draft_releases_are_ignored(github_stub):
+    github_stub.reply([
+        _release("v1.27.0", "BREAKING CHANGE: unreleased and unshipped", draft=True),
+        _release("v1.28.0", "Added an optional flag."),
+    ])
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["releases"] == 1
+    assert out["breaking"] is False
+
+
+def test_releases_outside_the_range_count_as_unchecked(github_stub):
+    github_stub.reply([_release("v0.9.0"), _release("v3.0.0", "BREAKING CHANGE: much later")])
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["checked"] is False                     # nothing in range was read
+    assert out["breaking"] is False
+    assert "no releases found between 1.26.0 and 2.0.0" in out["warning"]
+    assert out["markers"] == "major-version-bump"      # the bump still speaks
+
+
+def test_repository_without_releases_is_unknown_not_safe(github_stub):
+    github_stub.reply({"message": "Not Found"}, status=404)
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["ok"] is True
+    assert out["checked"] is False
+    assert out["breaking"] is False
+    assert "no releases published" in out["warning"]
+
+
+def test_rate_limit_is_reported_and_still_flags_a_major_bump(github_stub):
+    github_stub.reply({"message": "rate limited"}, status=403,
+                      headers={"X-RateLimit-Remaining": "0"})
+    out = _changelog(github_stub, "1.26.0", "2.0.0")
+
+    assert out["ok"] is True                           # an expected absence, not a crash
+    assert out["checked"] is False
+    assert out["rate_limited"] is True
+    assert "rate limit" in out["warning"]
+    assert out["markers"] == "major-version-bump"
+
+
+@pytest.mark.parametrize("tag,expected", [
+    ("v2.5.0rc1", True), ("v2.4.0-rc.2", True), ("v1.0.0-beta.1", True),
+    ("v1.2.3a1", True), ("v3.0.0-alpha", True), ("v1.0.0.dev1", True),
+    ("v2.5.0", False), ("v1.26.4", False), ("2024.1.0", False),
+    ("v1.2.3-abc", False),                      # not an alpha, just a word
+])
+def test_prerelease_tags_are_recognised(tag, expected):
+    assert fetch_changelog.is_prerelease({"tag_name": tag}) is expected
+
+
+def test_prereleases_do_not_double_report_their_final_release(github_stub):
+    """v2.4.0 and v2.4.0rc1 carry the same notes; reporting both is noise."""
+    notes = "- Removed the `foo()` helper"
+    github_stub.reply([_release("v2.4.0rc1", notes), _release("v2.4.0", notes)])
+    out = _changelog(github_stub, "2.3.0", "2.4.0")
+
+    assert out["releases"] == 1
+    assert [row[0] for row in unpack(out["packed"])] == ["v2.4.0"]
+
+
+def test_prereleases_are_kept_when_they_are_the_only_evidence(github_stub):
+    """Dropping them here would turn a real finding into a false all-clear."""
+    github_stub.reply([_release("v2.4.0rc1", "BREAKING CHANGE: dropped `foo()`")])
+    out = _changelog(github_stub, "2.3.0", "2.4.0")
+
+    assert out["releases"] == 1
+    assert out["checked"] is True
+    assert out["breaking"] is True
+    assert [row[0] for row in unpack(out["packed"])] == ["v2.4.0rc1"]
+
+
+def test_a_match_starting_on_a_blank_line_still_quotes_real_text(github_stub):
+    """`^\\s*` under re.M walks over newlines, so the match can begin on a
+    blank line. The sample must be the list item, never the empty line."""
+    github_stub.reply([_release("v2.0.0", "## Changes\n\n\n- Removed `foo()`\n")])
+    out = _changelog(github_stub, "1.0.0", "2.0.0")
+
+    samples = unpack(out["packed"])
+    assert samples, "a removal in the notes must produce a sample"
+    assert all(row[2].strip() for row in samples), "no empty sample lines"
+    assert any("Removed `foo()`" in row[2] for row in samples)
+
+
+def test_unreadable_notes_on_a_minor_bump_claim_nothing(github_stub):
+    github_stub.reply({"message": "boom"}, status=500)
+    out = _changelog(github_stub, "1.26.0", "1.28.0")
+
+    assert out["checked"] is False
+    assert out["breaking"] is False
+    assert out["markers"] == ""                        # no evidence either way
+    assert "HTTP 500" in out["warning"]
+
+
 # --------------------------------------------------------------------------
 # compute_verdict — the honesty invariant
 # --------------------------------------------------------------------------
+
+def _rec(name, **over):
+    rec = {"ecosystem": "pypi", "name": name, "current": "1.0", "latest": "2.0",
+           "gap": "major", "outdated": True, "direct": True, "files": 3,
+           "checked": True, "breaking": True}
+    rec.update(over)
+    return rec
+
+
+def test_records_can_come_from_a_file_instead_of_stdin(tmp_path):
+    """A rote step has no TTY, so the file form is the one a Play can run."""
+    path = tmp_path / "records.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        _rec("numpy"),
+        _rec("scipy", direct=False, gap="minor"),
+    ]) + "\n")
+
+    out = json.loads(run("compute_verdict.py", str(path)).stdout)
+    assert out["ok"] is True
+    assert out["total"] == 2
+    assert out["act"] == 1
+    assert out["safe"] == 1
+    assert [row[0] for row in unpack(out["packed"])] == ["ACT", "SAFE"]
+
+
+def test_file_and_stdin_forms_agree(tmp_path):
+    records = "\n".join(json.dumps(r) for r in [_rec("numpy"), _rec("scipy")]) + "\n"
+    path = tmp_path / "records.jsonl"
+    path.write_text(records)
+
+    assert (json.loads(run("compute_verdict.py", str(path)).stdout)
+            == json.loads(run("compute_verdict.py", stdin=records).stdout))
+
+
+def test_an_unreadable_records_file_fails_closed(tmp_path):
+    """Silently triaging zero dependencies would report a false all-clear."""
+    proc = run("compute_verdict.py", str(tmp_path / "nope.jsonl"))
+    assert proc.returncode == 2
+    assert "cannot read" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_an_empty_file_is_an_honest_nothing_to_triage(tmp_path):
+    path = tmp_path / "empty.jsonl"
+    path.write_text("")
+    out = json.loads(run("compute_verdict.py", str(path)).stdout)
+    assert out["ok"] is True
+    assert out["total"] == 0
+    assert out["headline"] == "nothing to triage"
+
+
 
 def _tier(direct, checked, breaking):
     rec = {"ecosystem": "npm", "name": "x", "current": "1.0.0", "latest": "2.0.0",
@@ -363,3 +619,167 @@ def test_vendor_directories_are_skipped(tmp_path):
     (vendored / "index.js").write_text("const x = require('express');\n")
     out = json.loads(run("find_callsites.py", str(tmp_path), "npm", "express").stdout)
     assert out["direct"] is False, "dependencies' own imports are not your call sites"
+
+
+# --------------------------------------------------------------------------
+# tools/inline_steps — the published Play must not point at one laptop
+# --------------------------------------------------------------------------
+
+def test_every_step_script_is_inlined():
+    table = dict(inline_steps.steps())
+    assert set(table) == {"compute_verdict", "fetch_changelog", "fetch_registry",
+                          "find_callsites", "parse_manifest"}
+    for prefix in table.values():
+        assert prefix[0] == "python3" and prefix[1] == "-c"
+
+
+def test_inlined_form_carries_no_local_path():
+    """The whole point: nothing in the argv may reference this machine."""
+    for name, prefix in inline_steps.steps():
+        joined = " ".join(prefix)
+        assert STEPS not in joined
+        assert ".py" not in prefix[2], f"{name} still names a file"
+
+
+@pytest.mark.parametrize("step,args", [
+    ("parse_manifest", ["{root}"]),
+    ("find_callsites", ["{root}", "pypi", "numpy"]),
+])
+def test_inlined_and_file_forms_agree(step, args, tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["numpy==1.26"]\n')
+    (tmp_path / "app.py").write_text("import numpy as np\n")
+    filled = [a.format(root=str(tmp_path)) for a in args]
+
+    direct = subprocess.run(
+        [sys.executable, os.path.join(STEPS, f"{step}.py"), *filled],
+        capture_output=True, text=True)
+    inlined = subprocess.run(
+        [*inline_steps.argv_prefix(os.path.join(STEPS, f"{step}.py")), *filled],
+        capture_output=True, text=True)
+
+    assert inlined.returncode == direct.returncode == 0
+    assert json.loads(inlined.stdout) == json.loads(direct.stdout)
+
+
+def test_inlined_form_preserves_a_failing_exit_code():
+    """Fail-closed has to survive the transport, or REVIEW rows become SAFE."""
+    prefix = inline_steps.argv_prefix(os.path.join(STEPS, "compute_verdict.py"))
+    proc = subprocess.run([*prefix, "/nonexistent/records.jsonl"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 2
+    assert "cannot read" in proc.stderr
+    assert proc.stdout == ""
+
+
+# --------------------------------------------------------------------------
+# compute_verdict --from-steps — the join fed by DAG edges, not a stray file
+# --------------------------------------------------------------------------
+
+def _registry_payload(name, **over):
+    rec = {"ok": True, "ecosystem": "pypi", "name": name, "current": "1.0",
+           "latest": "2.0", "repo": f"{name}/{name}", "gap": "major",
+           "outdated": True, "prerelease": False}
+    rec.update(over)
+    return json.dumps(rec)
+
+
+def _callsites_payload(name, direct=True, sites=(("src/app.py", "7", "import x"),)):
+    return json.dumps({
+        "ok": True, "ecosystem": "pypi", "name": name, "direct": direct,
+        "hits": len(sites) if direct else 0, "files": len(sites) if direct else 0,
+        "scanned": 23,
+        "packed": RS.join(FS.join(s) for s in sites) if direct else "",
+    })
+
+
+def _notes_payload(repo, checked=True, breaking=True, markers="removal"):
+    return json.dumps({"ok": True, "repo": repo, "current": "1.0", "latest": "2.0",
+                       "checked": checked, "breaking": breaking,
+                       "markers": markers if breaking else "", "packed": ""})
+
+
+def _from_steps(*blobs):
+    proc = run("compute_verdict.py", "--from-steps", *blobs)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_step_outputs_merge_into_the_same_verdict_as_a_records_file(tmp_path):
+    """The DAG form and the file form must not disagree."""
+    merged = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy"),
+                         _notes_payload("numpy/numpy"))
+
+    path = tmp_path / "records.jsonl"
+    path.write_text(json.dumps({
+        "ecosystem": "pypi", "name": "numpy", "current": "1.0", "latest": "2.0",
+        "gap": "major", "outdated": True, "direct": True, "files": 1,
+        "checked": True, "breaking": True, "markers": "removal",
+        "first_site": "src/app.py:7"}) + "\n")
+    from_file = json.loads(run("compute_verdict.py", str(path)).stdout)
+
+    assert merged == from_file
+
+
+def test_changelog_joins_on_the_repo_the_registry_reported():
+    """Changelog payloads know a repo, never a package name."""
+    out = _from_steps(_registry_payload("scipy"), _callsites_payload("scipy"),
+                      _notes_payload("scipy/scipy"))
+    row = unpack(out["packed"])[0]
+    assert row[0] == "ACT"
+    assert "removal" in row[7]
+
+
+def test_an_unscanned_dependency_is_review_never_safe():
+    """Nobody looked for call sites. That is an unknown, not an all-clear."""
+    out = _from_steps(_registry_payload("numpy"), _notes_payload("numpy/numpy"))
+
+    assert out["safe"] == 0
+    assert out["review"] == 1
+    assert unpack(out["packed"])[0][0] == "REVIEW"
+    assert "not scanned" in unpack(out["packed"])[0][7]
+
+
+def test_a_scanned_but_unimported_dependency_is_safe():
+    """The contrast: find_callsites ran and said no. That IS an all-clear."""
+    out = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy", direct=False),
+                      _notes_payload("numpy/numpy"))
+    assert out["safe"] == 1
+    assert unpack(out["packed"])[0][0] == "SAFE"
+
+
+def test_first_call_site_is_carried_through_from_the_packed_rows():
+    out = _from_steps(_registry_payload("numpy"),
+                      _callsites_payload("numpy", sites=(("src/fem.py", "8", "import numpy"),
+                                                 ("tests/t.py", "1", "import numpy"))),
+                      _notes_payload("numpy/numpy"))
+    assert unpack(out["packed"])[0][8] == "src/fem.py:8"
+
+
+def test_the_manifest_summary_is_ignored_rather_than_counted():
+    """parse_manifest's output names no single dependency."""
+    manifest = json.dumps({"ok": True, "count": 1, "manifests": "pyproject.toml",
+                           "ecosystems": "pypi", "packed": ""})
+    out = _from_steps(manifest, _registry_payload("numpy"), _callsites_payload("numpy"),
+                      _notes_payload("numpy/numpy"))
+    assert out["total"] == 1
+
+
+def test_unreadable_notes_leave_a_direct_dependency_in_review():
+    out = _from_steps(_registry_payload("numpy"), _callsites_payload("numpy"),
+                      _notes_payload("numpy/numpy", checked=False, breaking=False))
+    assert out["review"] == 1
+    assert out["safe"] == 0
+
+
+def test_a_malformed_step_payload_fails_closed():
+    proc = run("compute_verdict.py", "--from-steps", _registry_payload("numpy"), "{not json")
+    assert proc.returncode == 2
+    assert "not valid JSON" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_no_step_outputs_is_an_honest_nothing_to_triage():
+    out = _from_steps()
+    assert out["total"] == 0
+    assert out["headline"] == "nothing to triage"

@@ -63,6 +63,24 @@ does everything would make rote record a single opaque step with no edges — no
 parallelize, checkpoint, resume, or blame per source. During the recorded exploration each
 reading gets its own `rote proc run` capture, so independent readings become parallel root steps.
 
+## The join takes its input from the DAG, not from a file
+
+`compute_verdict.py --from-steps '<json>' '<json>' ...` folds the raw stdout of the upstream
+steps into one record per dependency, so the join can be fed by value edges instead of a
+records file somebody built by hand. Registry and call-site payloads are matched on
+`(ecosystem, name)`; changelog payloads only know a repository, so they are joined on the
+`repo` the registry step reported.
+
+A dependency whose call sites were never scanned comes back `REVIEW`, not `SAFE` — an absent
+`direct` flag means nobody looked, and this Play never reports an unknown as an all-clear.
+The file and `--from-steps` forms are asserted to produce identical output.
+
+## Picking this up cold
+
+`docs/HANDOFF.md` is the full state of the project: the goal, what is done, the four
+remaining problems with the exported play, the exact next steps, and the gotchas that
+cost time. Read it before touching anything.
+
 ## Tests
 
 ```bash
@@ -70,9 +88,32 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-63 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+102 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
+
+Release candidates are dropped when the same version also shipped a final release, since their
+notes are duplicates — unless prereleases are the only releases in range, where they are the only
+evidence there is.
+
+The GitHub release-notes reader is exercised end to end against a stub API served on localhost
+(`GITHUB_API_BASE`), so the path that actually reads notes — samples, markers, draft filtering,
+range selection, 404, rate limit, 500 — is covered without a network or a rate-limit budget.
+
+## Publishing: the scripts travel with the Play
+
+A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine.
+`tools/inline_steps.py` emits a self-contained `python3 -c` argv prefix per step, so the exported
+`main.ts` carries the scripts instead of pointing at them:
+
+```bash
+python3 tools/inline_steps.py --json
+```
+
+Base64 keeps the encoded body free of quotes and shell metacharacters, and arguments still land in
+`sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
+assert the inlined and file forms produce identical output and identical exit codes, including the
+fail-closed path.
 
 ## Optional GITHUB_TOKEN
 
@@ -80,6 +121,9 @@ The GitHub REST API allows 60 unauthenticated requests per hour and a 47-depende
 exhausts that. `GITHUB_TOKEN` raises it to 5000/hr. It is deliberately **optional**: the Play runs
 with no credentials at all and simply reports more `REVIEW` rows without one, which keeps
 `rote play inspect` showing *Authentication: none* and setup at zero for anyone adopting it.
+
+`GITHUB_API_BASE` overrides the API root (default `https://api.github.com`) for GitHub Enterprise
+installs and for the hermetic tests described above.
 
 ## Bugs found while testing
 

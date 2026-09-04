@@ -10,6 +10,9 @@ Contract (rote step):
   notes were actually read and contained no breaking markers; `checked` says
   which of those two situations you are in.
 
+GITHUB_API_BASE overrides the API root (default https://api.github.com) for
+GitHub Enterprise installs and for hermetic tests of the success path.
+
 Rate limit: the GitHub REST API allows 60 unauthenticated requests per hour,
 and a 47-dependency project blows through that. Set GITHUB_TOKEN to raise it to
 5000/hr. The token is optional by design so the Play still runs with no
@@ -28,15 +31,45 @@ RS = chr(30)
 UA = "upgrade-impact-triage/0.1 (+https://play.modiqo.ai)"
 TIMEOUT = 25
 
+
+def api_base():
+    """Read at call time, not import time, so tests can point it at a stub."""
+    return (os.environ.get("GITHUB_API_BASE", "").strip()
+            or "https://api.github.com").rstrip("/")
+
 BREAKING_PATTERNS = [
     (re.compile(r"\bBREAKING[ -]CHANGES?\b", re.I), "breaking-change"),
-    (re.compile(r"^\s*#{1,4}\s*breaking\b", re.I | re.M), "breaking-heading"),
+    (re.compile(r"^[ \t]*#{1,4}[ \t]*breaking\b", re.I | re.M), "breaking-heading"),
     (re.compile(r"\bbackwards?[- ]incompatible\b", re.I), "incompatible"),
-    (re.compile(r"^\s*[-*]\s*\*{0,2}(removed?|dropped?)\*{0,2}\s+", re.I | re.M), "removal"),
+    (re.compile(r"^[ \t]*[-*][ \t]*\*{0,2}(removed?|dropped?)\*{0,2}\s+", re.I | re.M), "removal"),
     (re.compile(r"\brenamed?\b.{0,40}\bto\b", re.I), "rename"),
     (re.compile(r"\bno longer\b", re.I), "no-longer"),
     (re.compile(r"\bmigration guide\b", re.I), "migration-guide"),
 ]
+
+
+# GitHub's `prerelease` flag is author-set and often left false on rc tags,
+# so the tag itself is the more reliable signal. Requires digits around the
+# marker so "v1.2.3-abc" is not read as an alpha.
+PRERELEASE_TAG = re.compile(
+    r"\d(?:[-._]?(?:rc|alpha|beta|dev|pre)\d*|(?:a|b|rc)\d+)\b", re.I)
+
+
+def is_prerelease(rel):
+    return bool(rel.get("prerelease")
+                or PRERELEASE_TAG.search(str(rel.get("tag_name") or "")))
+
+
+def first_line(text, pos):
+    """The first non-blank line at or after `pos`.
+
+    A match can begin on a blank line, so the text at `pos` is not always the
+    line worth quoting. Never return an empty sample.
+    """
+    for line in text[pos:pos + 400].splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
 
 
 def die(msg):
@@ -100,7 +133,7 @@ def main():
     cur_v, new_v = parse_version(current), parse_version(latest)
 
     data, err, limited = get_json(
-        f"https://api.github.com/repos/{urllib.parse.quote(repo)}/releases?per_page=100")
+        f"{api_base()}/repos/{urllib.parse.quote(repo)}/releases?per_page=100")
     if data is None:
         base["warning"] = f"{repo}: {err}"
         base["rate_limited"] = limited
@@ -110,21 +143,32 @@ def main():
             base["note"] = "unread notes, but a major version bump implies breaking changes"
         emit(base)
 
-    in_range, markers, samples = [], set(), []
+    candidates = []
     for rel in data:
         if rel.get("draft"):
             continue
         tv = tag_version(rel.get("tag_name"))
         if tv is None or not (cur_v < tv <= new_v):
             continue
-        in_range.append(rel)
+        candidates.append(rel)
+
+    # A release candidate's notes are superseded by the final release's, so
+    # counting both reports every finding twice (v2.4.0 and v2.4.0rc1 with
+    # identical text). Drop prereleases -- unless they are all there is, in
+    # which case they are the only evidence available and dropping them would
+    # turn a real finding into a false "nothing to read".
+    stable = [rel for rel in candidates if not is_prerelease(rel)]
+    in_range = stable or candidates
+
+    markers, samples = set(), []
+    for rel in in_range:
         body = rel.get("body") or ""
         for pat, label in BREAKING_PATTERNS:
             m = pat.search(body)
             if m:
                 markers.add(label)
-                line = body[m.start():m.start() + 160].splitlines()[0].strip()
-                if len(samples) < 12:
+                line = first_line(body, m.start())
+                if line and len(samples) < 12:
                     samples.append((str(rel.get("tag_name") or "?"), label, line[:150]))
 
     base.update({
