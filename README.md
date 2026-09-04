@@ -1,5 +1,14 @@
 # upgrade-impact-triage
 
+**Published:** https://play.modiqo.ai/adityagaur/upgrade-impact-triage@0.1.0
+
+```bash
+cd /tmp && rote play run https://play.modiqo.ai/adityagaur/upgrade-impact-triage --yes
+```
+
+Runs bare against the current directory. No credentials, no adapter, no declared writes —
+`rote play inspect` reports *Authentication: none*.
+
 A [Rote](https://github.com/modiqo/rote-releases) Play for the **Rote Playoffs** hackathon
 (1–6 September 2026), answering the question dependency tooling skips:
 

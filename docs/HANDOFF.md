@@ -70,6 +70,42 @@ simplification.
 
 ---
 
+## 0. It is published
+
+```
+https://play.modiqo.ai/adityagaur/upgrade-impact-triage@0.1.0
+```
+
+Install link: `https://play.modiqo.ai/install?play=adityagaur/upgrade-impact-triage@0.1.0`
+
+Published 2026-09-04, public, 17,859 bytes. **Publishing is submitting**, so the
+entry is in. Verified the way criterion 2 asks — resolved from that URI, installed
+and run from `/tmp` by a copy that had never seen the repo:
+
+```
+ACCESS
+Services           none
+Writes             none declared
+Authentication     none
+Privileged access  process
+
+  stages  ████████████████████████  5/5 ok
+
+2 of 2 dependencies have breaking changes in code you actually call
+  ACT  pypi  numpy  1.26 -> 2.5.2   major  14 files  tests/mocks.py:13
+  ACT  pypi  scipy  1.11 -> 1.18.1  minor   2 files  src/ecoslice/fem.py:8
+```
+
+*Authentication: none* is what the decision to leave `GITHUB_TOKEN` undeclared
+bought. A stranger sees no credential request at all.
+
+What remains is adoption, and one note from the release output worth carrying:
+**a process play under a personal handle is public but not team-runnable the way
+an org play is.** If the `hackathon` invite ever lands, republishing there is
+additive and better for the scoreboard.
+
+---
+
 ## 3. Where things stand
 
 | Phase | State |
@@ -86,8 +122,10 @@ simplification.
 | **First real run** | **5/5 completed, 5 layers, 3.5s — the demo output is real** |
 | Negative space (absence, hard fault, blocking) | **passes — see section 7** |
 | Presentation fixtures | **done** — from `run_20260904_001502.667_0` |
-| `rote play release` | **released**; readiness blocker fixed — re-release to clear it |
-| Publish | not started |
+| `rote play release` | **released, readiness: ready** |
+| **Publish** | **DONE — `adityagaur/upgrade-impact-triage@0.1.0`, public** |
+| Verified from the registry | **DONE — resolved, installed and run from `/tmp`, 5/5 ok** |
+| Adoption | share the URI; the scoreboard is installs by other competitors |
 
 ### Release readiness — fixed
 
