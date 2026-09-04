@@ -7,7 +7,7 @@
  * @rote-frontmatter
  * ---
  * name: upgrade-impact-triage
- * version: 0.1.0
+ * version: 0.1.1
  * description: "Of your outdated dependencies, which ones ship breaking changes in code you actually import? Reads every manifest under root, resolves current versus latest from npm, PyPI or crates.io, reads the GitHub release notes between the two, and finds the files and line numbers that import each package. Ranks each dependency ACT (breaking changes, and you call it directly), REVIEW (you call it, but the notes could not be read), SAFE (transitive, or the notes were read and were clean) or CURRENT. An unreadable changelog reports as REVIEW and never as SAFE, so a rate-limited or offline run produces more rows to check by hand and never fewer warnings. Standard library Python only; GITHUB_TOKEN is optional and raises the API rate limit."
  * source: https://semver.org/
  * provenance:
@@ -16,7 +16,7 @@
  *   workspace: upgrade-impact-triage
  * metadata:
  *   rote_version: "0.78.0"
- *   version: "0.1.0"
+ *   version: "0.1.1"
  *   status: draft
  *   kind: atomic
  *   flow_type: parallel

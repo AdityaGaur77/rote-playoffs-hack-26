@@ -732,7 +732,7 @@ def test_batch_accepts_a_whole_payload_or_a_bare_packed_scalar():
 
 def test_malformed_upstream_payload_is_a_hard_fault():
     """A broken edge must fail closed, not triage zero dependencies."""
-    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed"')
+    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed": nope}')
     assert proc.returncode == 2
     assert proc.stdout == ""
     assert "will not parse" in proc.stderr
@@ -1186,3 +1186,38 @@ def test_every_required_tool_has_an_install_candidate():
             f"{tool['id']} should offer at least brew and apt: got {sorted(managers)}")
         for candidate in candidates:
             assert candidate.get("package") or candidate.get("command"), candidate
+
+
+def test_a_truncated_upstream_is_named_not_just_rejected():
+    """rote cuts a step's stdout at 64 KiB and still reports it completed.
+
+    Failing closed is necessary but not sufficient: a parser error about an
+    escape sequence 65,000 characters in tells the operator nothing about what
+    went wrong or how many dependencies went unseen.
+    """
+    row = FS.join(["pypi", "pkg", "1.0", "2.0", "o/r", "major", "1", "1", "3",
+                   "a.py:1", "1", "1", "removal"])
+    full = json.dumps({"ok": True, "packed": RS.join([row] * 600)})
+    assert len(full) > 65536, "fixture must exceed the cap it is testing"
+    proc = run("compute_verdict.py", "--batch", full[:65536])
+
+    assert proc.returncode == 2
+    assert proc.stdout == "", "nothing may be reported from a partial list"
+    assert "ends mid-value" in proc.stderr
+    assert "65,536" in proc.stderr
+
+
+def test_a_genuinely_malformed_payload_still_says_so():
+    """Truncation and malformation are different problems; keep them apart."""
+    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed": nope}')
+    assert proc.returncode == 2
+    assert "will not parse" in proc.stderr
+    assert "65,536" not in proc.stderr
+
+
+def test_a_short_unclosed_payload_does_not_claim_the_64_kib_cap():
+    """It ends mid-value, but nothing here evidences the stdout cap as the cause."""
+    proc = run("compute_verdict.py", "--batch", '{"ok": true, "packed"')
+    assert proc.returncode == 2
+    assert "ends mid-value" in proc.stderr
+    assert "65,536" not in proc.stderr

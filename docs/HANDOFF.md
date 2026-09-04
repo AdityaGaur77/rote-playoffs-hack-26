@@ -112,6 +112,30 @@ scheduler runs from is what gets triaged. Check with `play recurring schedule
 --help` whether parameters can be pinned; a run against a real project reads
 far better than one that reports "nothing to triage".
 
+### 0.1.1 — naming a truncated stage
+
+rote cuts a step's stdout at 65,536 bytes and still records the step as
+**completed** (filed in the Playoffs channel by two people independently). Our
+carrier is ~139 bytes a row, so ~470 dependencies crosses it — a monorepo, not
+a toy.
+
+The chain already failed closed there: a cut payload will not parse, so the
+stage exits 2 and every dependent is BLOCKED. Nothing was ever laundered. But
+it failed with a parser complaint about an escape sequence 65,000 characters
+in, which tells an operator nothing. It now says what happened, and only blames
+the cap when the size supports it:
+
+```
+upstream payload ends mid-value at 65,536 bytes, so the dependencies past the
+cut were never seen. rote caps a step's stdout at 65,536 bytes and still
+reports the step completed, so this is almost certainly that cut. Failing
+closed rather than triaging a partial list.
+```
+
+A 21-byte unclosed payload gets the same first sentence and **not** the cap
+claim — asserting a cause the evidence does not carry is the failure this Play
+exists to avoid, and it applies to our own diagnostics too.
+
 What remains is adoption, and one note from the release output worth carrying:
 **a process play under a personal handle is public but not team-runnable the way
 an org play is.** If the `hackathon` invite ever lands, republishing there is
@@ -300,14 +324,14 @@ tools/make_fixtures.py     <input.json>                       -> presentation fi
 play/main.ts               generated, 7 KB                    -> the Play
 play/resources/*.py        published copies of steps/         -> named by @resource{}
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 137 tests
+tests/test_steps.py                                           -> 140 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **133 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **136 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours

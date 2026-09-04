@@ -163,6 +163,21 @@ def upstream_packed(arg):
     try:
         doc = json.loads(text)
     except json.JSONDecodeError as exc:
+        # rote cuts a step's stdout at 64 KiB and still records the step as
+        # completed, so a payload that opens like JSON and does not close like
+        # it was almost certainly truncated in transport rather than malformed
+        # at the source. Naming that beats a parser complaint about an escape
+        # sequence 65,000 characters in.
+        if not text.endswith("}"):
+            # Only blame the cap when the size supports it. A short unclosed
+            # payload ends mid-value too, and calling that a 64 KiB truncation
+            # would be asserting a cause the evidence does not carry.
+            hint = (" rote caps a step's stdout at 65,536 bytes and still reports the "
+                    "step completed, so this is almost certainly that cut."
+                    if len(text) >= 60_000 else "")
+            die(f"upstream payload ends mid-value at {len(text):,} bytes, so the "
+                f"dependencies past the cut were never seen.{hint} Failing closed "
+                f"rather than triaging a partial list.")
         die(f"upstream payload will not parse as JSON: {exc}")
     if not isinstance(doc, dict):
         die("upstream payload is not a JSON object")

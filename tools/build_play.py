@@ -46,7 +46,7 @@ FIXTURES = os.path.join(RESOURCES, "presentation-fixtures")
 ARGV_LIMIT = 256
 
 NAME = "upgrade-impact-triage"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 AUTHOR = "adityagaur <adityagaur12077@gmail.com>"
 SOURCE = "https://semver.org/"
 
