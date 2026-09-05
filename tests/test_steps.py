@@ -1075,8 +1075,20 @@ def test_the_deps_manifest_uses_the_schema_rote_accepts():
 # tools/make_fixtures — presentation evidence, taken from a real run
 # --------------------------------------------------------------------------
 
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-import make_fixtures                # noqa: E402
+# Loaded by path, not by name: lockdrift/tools/ ships modules with the same
+# basenames, and a bare import silently resolves to whichever suite pytest
+# imported first.
+def _load(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        f"uit_{name}", os.path.join(os.path.dirname(HERE), "tools", f"{name}.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+make_fixtures = _load("make_fixtures")
+build_play = _load("build_play")
 
 
 def _recorded(status="completed", stdout='{"ok": true}\n', stderr=""):
@@ -1150,14 +1162,12 @@ def test_an_empty_stdout_is_refused_as_evidence(tmp_path, monkeypatch):
 
 def test_fixture_timeouts_agree_with_the_declared_step_budgets():
     """A manifest that claims a budget the step does not have is evidence of nothing."""
-    import build_play
     assert dict(make_fixtures.STEPS) == {
         step: timeout for step, _script, timeout, _spec, _parents in build_play.GRAPH}
 
 
 def test_the_play_declares_fixtures_once_they_exist():
     """Declared only when present — a declaration with a missing target is a lint error."""
-    import build_play
     play = _play()
     if build_play.fixtures_present():
         doc = _frontmatter(play)
