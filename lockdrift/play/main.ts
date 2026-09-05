@@ -7,7 +7,7 @@
  * @rote-frontmatter
  * ---
  * name: lockfile-drift
- * version: 0.1.0
+ * version: 0.1.1
  * description: "Which of your dependencies would change if you installed right now? Your manifest declares a range, your lockfile pins a version, and your installed tree holds a third answer -- and they disagree more often than anyone checks. This reads all three off your disk and reports each dependency as DRIFT (the sources disagree in a way your next install acts on), UNLOCKED (declared, but nothing pins it), UNCHECKED (a source could not be read or observed) or SYNCED (all three read, all three agree). A source that was not read is never reported as agreement: no node_modules means the installed state was not observed, so those rows are UNCHECKED and never SYNCED. Range evaluation is deliberately narrow -- carets, tildes, exact pins and single comparators are evaluated, while unions, hyphen ranges and git, file or workspace references are reported unevaluated rather than guessed. It never installs, never resolves against a registry, and never runs a package manager, so it cannot tell you the newest version -- only whether what you already have agrees with itself. npm and Python; standard library only."
  * source: https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json
  * provenance:
@@ -16,7 +16,7 @@
  *   workspace: lockfile-drift
  * metadata:
  *   rote_version: "0.78.0"
- *   version: "0.1.0"
+ *   version: "0.1.1"
  *   status: draft
  *   kind: atomic
  *   flow_type: parallel

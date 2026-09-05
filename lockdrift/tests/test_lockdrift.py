@@ -395,3 +395,78 @@ def test_every_shipped_resource_parses_at_the_declared_floor():
             continue
         with open(os.path.join(PLAY, "resources", name)) as handle:
             ast.parse(handle.read(), feature_version=(3, 8))
+
+
+# --------------------------------------------------------------------------
+# The pyproject reader must not invent dependencies
+#
+# Found on the first real run: an ordinary pyproject reported `EcoSlice
+# contributors`, `src` and `tests` as declared dependencies, because the reader
+# matched any `key = [...]` anywhere in the file. A reader that invents rows is
+# the same failure as one that hides them, pointed the other way.
+# --------------------------------------------------------------------------
+
+REALISTIC_PYPROJECT = '''[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecoslice"
+authors = [{name = "EcoSlice contributors"}]
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved"]
+keywords = ["fem", "meshing"]
+dependencies = ["numpy>=1.26", "scipy>=1.11", "pyamg>=5.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools]
+packages = ["src", "tests"]
+'''
+
+
+def test_only_dependency_tables_are_read(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(REALISTIC_PYPROJECT)
+    out = json.loads(read("read_declared.py", tmp_path))
+    found = {row.split(FS)[1] for row in out["packed"].split(RS) if row}
+    assert found == {"numpy", "scipy", "pyamg", "pytest"}
+    for invented in ("EcoSlice", "src", "tests", "wheel", "Programming", "fem"):
+        assert invented not in found, f"{invented} is not a dependency"
+
+
+def test_build_requirements_are_not_your_dependencies(tmp_path):
+    """They install into the build environment, not yours."""
+    (tmp_path / "pyproject.toml").write_text(REALISTIC_PYPROJECT)
+    out = json.loads(read("read_declared.py", tmp_path))
+    found = {row.split(FS)[1] for row in out["packed"].split(RS) if row}
+    assert "setuptools" not in found
+
+
+def test_optional_dependency_groups_are_labelled(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(REALISTIC_PYPROJECT)
+    out = json.loads(read("read_declared.py", tmp_path))
+    sections = {row.split(FS)[1]: row.split(FS)[4]
+                for row in out["packed"].split(RS) if row}
+    assert sections["pytest"] == "optional:dev"
+    assert sections["numpy"] == "project"
+
+
+def test_poetry_dependencies_are_read(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry]\nname = "demo"\n\n[tool.poetry.dependencies]\n'
+        'python = "^3.9"\nrequests = "^2.31.0"\n'
+        'numpy = { version = "1.26.4", optional = true }\n')
+    out = json.loads(read("read_declared.py", tmp_path))
+    found = {row.split(FS)[1]: row.split(FS)[2]
+             for row in out["packed"].split(RS) if row}
+    assert found == {"requests": "^2.31.0", "numpy": "1.26.4"}, "python is not a dependency"
+
+
+def test_a_multiline_dependency_array_is_read(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\ndependencies = [\n'
+        '    "numpy>=1.26",   # trailing comments must not break it\n'
+        '    "scipy==1.11",\n]\n\n[tool.setuptools]\npackages = ["src"]\n')
+    out = json.loads(read("read_declared.py", tmp_path))
+    found = {row.split(FS)[1] for row in out["packed"].split(RS) if row}
+    assert found == {"numpy", "scipy"}

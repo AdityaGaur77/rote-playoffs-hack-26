@@ -108,23 +108,85 @@ def pep508(entry):
     return name, rest
 
 
+def _sections(text):
+    """{section: {key: str | [str]}} for the shapes a manifest uses.
+
+    Section awareness is the whole point. Scanning the file for any
+    `key = [...]` reports `authors`, `classifiers` and `packages` as
+    dependencies -- a reader inventing rows, which is the same failure as one
+    hiding them.
+    """
+    sections, current, key, buffer = {}, "", None, None
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip() if not raw.strip().startswith("#") else ""
+        if not line:
+            continue
+        if buffer is not None:
+            buffer.append(line)
+            if "]" in line:
+                joined = " ".join(buffer)
+                sections.setdefault(current, {})[key] = re.findall(
+                    r'["\']([^"\']*)["\']', joined.split("[", 1)[1])
+                key, buffer = None, None
+            continue
+        if line.startswith("["):
+            current = line.strip("[]").strip()
+            sections.setdefault(current, {})
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().strip("\"'"), value.strip()
+        if value.startswith("[") and "]" not in value:
+            buffer = [value]
+            continue
+        if value.startswith("["):
+            sections.setdefault(current, {})[key] = re.findall(
+                r'["\']([^"\']*)["\']', value)
+        else:
+            sections.setdefault(current, {})[key] = value.strip("\"'")
+        key = None
+    return sections
+
+
+def _poetry_version(value):
+    if isinstance(value, list):
+        return ""
+    if value.startswith("{"):
+        match = re.search(r'version\s*=\s*["\']([^"\']*)["\']', value)
+        return match.group(1) if match else ""
+    return value
+
+
 def pyproject_declared(path, rel, rows, broken):
+    """Only the tables that actually declare runtime dependencies.
+
+    `[build-system] requires` is deliberately excluded: those install into the
+    build environment, not yours, and reporting them as your dependencies would
+    be answering a different question than the one asked.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
-            text = handle.read()
+            sections = _sections(handle.read())
     except OSError as exc:
         broken.append(f"{rel}: {exc}")
         return
-    # [project] dependencies = [...] and [project.optional-dependencies]
-    for match in re.finditer(
-            r"^\s*(?:dependencies|[A-Za-z0-9_-]+)\s*=\s*\[(.*?)\]",
-            text, re.S | re.M):
-        block = match.group(1)
-        # Only take blocks that look like requirement lists.
-        for raw in re.findall(r'["\']([^"\']+)["\']', block):
-            parsed = pep508(raw)
-            if parsed and re.match(r"^[A-Za-z0-9]", parsed[0]):
-                rows.append(("pypi", parsed[0], parsed[1], rel, "project"))
+
+    for entry in sections.get("project", {}).get("dependencies") or []:
+        parsed = pep508(entry)
+        if parsed:
+            rows.append(("pypi", parsed[0], parsed[1], rel, "project"))
+
+    for group, entries in (sections.get("project.optional-dependencies") or {}).items():
+        for entry in entries if isinstance(entries, list) else []:
+            parsed = pep508(entry)
+            if parsed:
+                rows.append(("pypi", parsed[0], parsed[1], rel, f"optional:{group}"))
+
+    for name, spec in (sections.get("tool.poetry.dependencies") or {}).items():
+        if name.lower() == "python":
+            continue
+        rows.append(("pypi", name, _poetry_version(spec), rel, "poetry"))
 
 
 def requirements_declared(path, rel, rows, broken):

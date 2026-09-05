@@ -70,6 +70,23 @@ Two bugs the fixture caught before anything shipped, both in the range reader:
   tree may simply be a production install. Calling both drift would have
   invented evidence; calling both unknown would have hidden it.
 
+## Found on the first real run
+
+Published 0.1.0 reported `EcoSlice contributors`, `src` and `tests` as declared
+dependencies of a perfectly ordinary pyproject. The reader was matching any
+`key = [...]` anywhere in the file, so `authors`, `classifiers`, `packages` and
+`[build-system] requires` all became dependencies.
+
+A reader that invents rows is the same failure as one that hides them, pointed
+the other way — and it is worse here than a miss, because every invented row
+arrives with a confident UNCHECKED verdict attached.
+
+Fixed in 0.1.1: the reader is section-aware and takes only
+`[project] dependencies`, `[project.optional-dependencies]` (labelled by group)
+and `[tool.poetry.dependencies]`. Build requirements are deliberately excluded —
+they install into the build environment, not yours, so reporting them answers a
+different question than the one asked.
+
 ## Next
 
     python3 lockdrift/tools/build_play.py
