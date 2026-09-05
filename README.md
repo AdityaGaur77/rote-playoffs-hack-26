@@ -21,6 +21,22 @@ actual work of upgrading lives.
 Typical output shape: **3 of your 47 outdated dependencies have breaking changes in code you
 really use — here they are, with line numbers.** The other 44 are safe to bump blind.
 
+## A check that cannot fail proves nothing
+
+The rule this project keeps relearning, kept here because it has cost real
+findings three times:
+
+The first attempt to reproduce a reported bug raised `ImportError` where the
+guard catches `ModuleNotFoundError`. It sailed past, the warning surfaced, and
+the report looked mistaken. The check could not have failed — so it proved
+nothing, and it nearly cost a real fix.
+
+Every degradation test in this repo now asserts that the thing it disables is
+actually disabled: the `tomllib` shim asserts the import raises the subclass the
+guard catches; the truncation test asserts its fixture exceeds the cap it is
+testing; the invented-dependency test asserts each bad name is absent *by name*
+rather than counting rows.
+
 ## The ranking, which is the whole point
 
 | Tier | Meaning |
@@ -119,7 +135,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-148 tests — 144 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
+210 tests — 206 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 

@@ -74,7 +74,7 @@ simplification.
 
 | Play | Version | State |
 |---|---|---|
-| `adityagaur/upgrade-impact-triage` | **0.1.2** | public, released, lint clean, scheduled daily |
+| `adityagaur/upgrade-impact-triage` | **0.1.3** | public, released, lint clean, scheduled daily |
 | `adityagaur/lockfile-drift` | **0.1.1** | public, released, lint clean, fixtures from a real run |
 
 Two Plays, two submissions — the rules count each published public Play
@@ -151,6 +151,38 @@ the one strangers are running is worse than either design. Their commits remain
 in history through the merge parent, so nothing is lost if the fan-in shape is
 preferred later — it is a better DAG on paper, with more parallelism, and worth
 revisiting after the deadline.
+
+### 0.1.3 — the same bug a third time, on the Python most people run
+
+0.1.2 fixed the tomllib-less path and left an asymmetry nobody had reason to
+look for. The identical `pyproject.toml`, carrying a dependency table neither
+reader handled:
+
+| | 3.9.6 | 3.11 |
+|---|---|---|
+| count | 0 | 0 |
+| listed in `manifests` | no | **yes** |
+| warning | yes | **none** |
+
+The guard only ever protected the fallback. The tomllib path had no equivalent,
+so on the newer interpreter an unread dependency table read as "declares
+nothing" — the original bug, third instance, on the more common Python.
+
+Found by verifying a reviewer's all-clear rather than accepting it. They tested
+`[tool.pdm.dev-dependencies]`, saw the guard fire correctly on 3.9, and stopped
+there; running the same file on 3.11 was the question their test implied but did
+not ask.
+
+Fixed both ways round. Both paths now read every table a pyproject actually
+declares dependencies in — `[project] dependencies`,
+`[project.optional-dependencies]`, `[dependency-groups]` (PEP 735),
+`[tool.poetry.dependencies]`, `[tool.poetry.group.*.dependencies]` and
+`[tool.pdm.dev-dependencies]` — so PDM and hatch projects yield findings instead
+of warnings. And both carry the same guard, so a table neither handles warns on
+either interpreter and is never listed as read.
+
+Reading only `[project] dependencies` was its own quiet gap: test and dev groups
+are where a breaking change surfaces first, in CI, on someone else's machine.
 
 ### 0.1.2 — the Play committed the failure it exists to report
 
@@ -417,7 +449,7 @@ smoke_test.sh
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **144 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **206 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours

@@ -1362,3 +1362,72 @@ def test_a_multiline_dependency_array_is_read_without_tomllib(
     out = json.loads(run("parse_manifest.py", str(project),
                          env=without_tomllib).stdout)
     assert {row[1] for row in unpack(out["packed"])} == {"numpy", "scipy"}
+
+
+# --------------------------------------------------------------------------
+# The two readers must agree, and must agree about what they cannot read
+#
+# 0.1.2 fixed the tomllib-less path and left an asymmetry: a dependency table
+# neither reader handled warned on 3.9 and passed silently on 3.11 -- the
+# original bug again, on the Python most people run. These lock both halves.
+# --------------------------------------------------------------------------
+
+PDM = ('[project]\nname = "svc"\nversion = "1.0"\n\n'
+       '[tool.pdm.dev-dependencies]\ntest = ["pytest>=8.0", "numpy>=1.26"]\n')
+
+UNHANDLED = ('[project]\nname = "svc"\nversion = "1.0"\n\n'
+             '[tool.hatch.envs.default]\ndependencies = ["pytest>=8.0"]\n')
+
+
+def _names(tmp_path, text, env=None):
+    (tmp_path / "pyproject.toml").write_text(text)
+    out = json.loads(run("parse_manifest.py", str(tmp_path), env=env).stdout)
+    return out, {row[1] for row in unpack(out["packed"])}
+
+
+@pytest.mark.parametrize("table,expected", [
+    ('[project]\nname = "s"\ndependencies = ["numpy>=1.26"]\n', {"numpy"}),
+    ('[project]\nname = "s"\n\n[project.optional-dependencies]\n'
+     'dev = ["pytest>=8.0"]\ndocs = ["sphinx>=7"]\n', {"pytest", "sphinx"}),
+    ('[project]\nname = "s"\n\n[dependency-groups]\n'
+     'test = ["pytest>=8.0"]\n', {"pytest"}),                      # PEP 735
+    ('[tool.poetry.dependencies]\npython = "^3.9"\nrequests = "^2.31"\n', {"requests"}),
+    ('[tool.poetry.group.dev.dependencies]\nmypy = "^1.8"\n', {"mypy"}),
+    (PDM, {"pytest", "numpy"}),
+])
+def test_every_dependency_table_is_read(tmp_path, without_tomllib, table, expected):
+    """Test and dev groups are where a breaking change surfaces first, in CI."""
+    with_lib = _names(tmp_path / "a", table)[1] if (tmp_path / "a").mkdir() is None else None
+    without = _names(tmp_path / "b", table, env=without_tomllib)[1] \
+        if (tmp_path / "b").mkdir() is None else None
+    assert with_lib == expected, "with tomllib"
+    assert without == expected, "without tomllib"
+
+
+def test_a_table_neither_reader_handles_warns_on_both_pythons(tmp_path,
+                                                              without_tomllib):
+    """The asymmetry 0.1.2 left behind: silence on 3.11, a warning on 3.9."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with_lib, names_with = _names(tmp_path / "a", UNHANDLED)
+    without, names_without = _names(tmp_path / "b", UNHANDLED, env=without_tomllib)
+
+    for label, out in (("with tomllib", with_lib), ("without", without)):
+        assert out["count"] == 0, label
+        assert out["warning"], f"{label}: silent zero on an unread dependency table"
+        assert "pyproject.toml" not in out["manifests"], \
+            f"{label}: claimed to have read it"
+    assert names_with == names_without == set()
+
+
+def test_the_two_readers_agree_on_a_realistic_project(tmp_path, without_tomllib):
+    text = ('[build-system]\nrequires = ["setuptools>=68"]\n\n'
+            '[project]\nname = "api"\nauthors = [{name = "Someone"}]\n'
+            'dependencies = ["numpy==1.26", "scipy==1.11"]\n\n'
+            '[project.optional-dependencies]\ndev = ["pytest>=8.0"]\n')
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with_lib, names_with = _names(tmp_path / "a", text)
+    without, names_without = _names(tmp_path / "b", text, env=without_tomllib)
+    assert names_with == names_without == {"numpy", "scipy", "pytest"}
+    assert with_lib["packed"] == without["packed"], "the readers must not differ"

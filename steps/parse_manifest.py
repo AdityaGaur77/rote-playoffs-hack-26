@@ -148,26 +148,58 @@ def _read_toml(path):
         return tomllib.load(fh)
 
 
-def from_pyproject(path):
-    data = _read_toml(path)
-    if data is None:
-        return _pyproject_fallback(path)
-    out = []
-    project = data.get("project") or {}
-    for entry in project.get("dependencies") or []:
+def _pep508_into(entries, out):
+    for entry in entries or []:
+        if not isinstance(entry, str):
+            continue
         name = re.split(r"[<>=!~\[; ]", entry.strip(), maxsplit=1)[0]
         if name:
             out.append(("pypi", name, clean_version(entry)))
-    poetry = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies") or {}
-    for name, spec in poetry.items():
+
+
+def _table_into(table, out):
+    for name, spec in (table or {}).items():
         if name.lower() == "python":
             continue
         if isinstance(spec, dict):
             spec = spec.get("version", "")
-        out.append(("pypi", name, clean_version(spec)))
-    return out
+        if isinstance(spec, str):
+            out.append(("pypi", name, clean_version(spec)))
 
 
+def from_pyproject(path):
+    """Every table a pyproject actually declares dependencies in.
+
+    Reading only `[project] dependencies` misses the ones that bite hardest --
+    test and dev groups are where a breaking change surfaces first, in CI, on
+    someone else's machine.
+    """
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    data = _read_toml(path)
+    if data is None:
+        return _pyproject_fallback(path, text)
+
+    out = []
+    project = data.get("project") or {}
+    _pep508_into(project.get("dependencies"), out)
+    for entries in (project.get("optional-dependencies") or {}).values():
+        _pep508_into(entries, out)
+    for entries in (data.get("dependency-groups") or {}).values():   # PEP 735
+        _pep508_into(entries, out)
+
+    tool = data.get("tool") or {}
+    poetry = tool.get("poetry") or {}
+    _table_into(poetry.get("dependencies"), out)
+    for group in (poetry.get("group") or {}).values():
+        _table_into((group or {}).get("dependencies"), out)
+    for entries in ((tool.get("pdm") or {}).get("dev-dependencies") or {}).values():
+        _pep508_into(entries, out)
+
+    # The same guard the fallback carries. Without it the two paths disagree:
+    # a table neither reader handles warned on 3.9 and passed silently on 3.11,
+    # which is the original bug again, on the Python most people run.
+    return _refuse_silent_empty(path, text, out)
 
 
 def _refuse_silent_empty(path, text, found):
@@ -184,21 +216,34 @@ def _refuse_silent_empty(path, text, found):
     return found
 
 
-def _pyproject_fallback(path):
+def _pyproject_fallback(path, text):
     """pyproject.toml without tomllib. Raises if it cannot read the file, so
     the caller records it as unreadable instead of as empty."""
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
     sections = _toml_sections(text)
     out = []
     for entry in sections.get("project", {}).get("dependencies") or []:
         name = re.split(r"[<>=!~\[; ]", entry.strip(), maxsplit=1)[0]
         if name:
             out.append(("pypi", name, clean_version(entry)))
+    for group, entries in (sections.get("project.optional-dependencies") or {}).items():
+        if isinstance(entries, list):
+            _pep508_into(entries, out)
+    for group, entries in (sections.get("dependency-groups") or {}).items():
+        if isinstance(entries, list):
+            _pep508_into(entries, out)
     for name, spec in (sections.get("tool.poetry.dependencies") or {}).items():
         if name.lower() == "python":
             continue
         out.append(("pypi", name, clean_version(_inline_version(spec))))
+    for section, table in sections.items():
+        if section.startswith("tool.poetry.group.") and section.endswith(".dependencies"):
+            for name, spec in table.items():
+                if name.lower() != "python":
+                    out.append(("pypi", name, clean_version(_inline_version(spec))))
+        elif section == "tool.pdm.dev-dependencies":
+            for entries in table.values():
+                if isinstance(entries, list):
+                    _pep508_into(entries, out)
     return _refuse_silent_empty(path, text, out)
 
 
