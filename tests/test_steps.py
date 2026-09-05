@@ -1231,3 +1231,134 @@ def test_a_short_unclosed_payload_does_not_claim_the_64_kib_cap():
     assert proc.returncode == 2
     assert "ends mid-value" in proc.stderr
     assert "65,536" not in proc.stderr
+
+
+# --------------------------------------------------------------------------
+# tomllib is 3.11+, this Play declares a 3.8 floor, and stock macOS is 3.9.6
+#
+# Reported from a real run: on a Python without tomllib, from_pyproject and
+# from_cargo returned [] rather than raising, so the file was appended to
+# `manifests` as though it had been read and no warning was ever set. A
+# pyproject full of dependencies vanished under a green stage bar. That is the
+# exact failure this Play exists to report, committed by the Play itself.
+#
+# The suite could not have caught it: this interpreter has tomllib. These tests
+# take it away.
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def without_tomllib(tmp_path):
+    """A PYTHONPATH that makes `import tomllib` raise ModuleNotFoundError.
+
+    It must be that exact type: the guard catches ModuleNotFoundError, and a
+    plain ImportError sails past it, so a shim raising the wrong one would test
+    nothing while appearing to pass.
+    """
+    shim = tmp_path / "no_tomllib"
+    shim.mkdir()
+    (shim / "tomllib.py").write_text(
+        'raise ModuleNotFoundError("No module named \'tomllib\'")\n')
+    return {"PYTHONPATH": str(shim)}
+
+
+def test_the_shim_raises_the_type_the_guard_catches(without_tomllib):
+    proc = subprocess.run([sys.executable, "-c", "import tomllib"],
+                          capture_output=True, text=True,
+                          env={**os.environ, **without_tomllib})
+    assert proc.returncode != 0
+    assert "ModuleNotFoundError" in proc.stderr
+
+
+def test_pyproject_is_read_without_tomllib(tmp_path, without_tomllib):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "api"\ndependencies = ["numpy==1.26", "scipy==1.11"]\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    found = {row[1]: row[2] for row in unpack(out["packed"])}
+    assert found == {"numpy": "1.26", "scipy": "1.11"}
+
+
+def test_the_same_answer_with_and_without_tomllib(tmp_path, without_tomllib):
+    """A JS front end beside a Python backend -- an ordinary layout, and the
+    one where the bug produced a full green bar and zero findings."""
+    project = tmp_path / "mixed"
+    (project / "web").mkdir(parents=True)
+    (project / "api").mkdir(parents=True)
+    (project / "web" / "package.json").write_text(
+        json.dumps({"name": "web", "dependencies": {"left-pad": "^1.3.0"}}))
+    (project / "api" / "pyproject.toml").write_text(
+        '[project]\nname = "api"\ndependencies = ["numpy==1.26", "scipy==1.11"]\n')
+
+    with_lib = json.loads(run("parse_manifest.py", str(project)).stdout)
+    without = json.loads(run("parse_manifest.py", str(project),
+                             env=without_tomllib).stdout)
+    assert with_lib["count"] == 3
+    assert without["packed"] == with_lib["packed"]
+    assert not without.get("warning")
+
+
+def test_cargo_is_read_without_tomllib(tmp_path, without_tomllib):
+    project = tmp_path / "rs"
+    project.mkdir()
+    (project / "Cargo.toml").write_text(
+        '[package]\nname = "demo"\n\n[dependencies]\nserde = "1.0.190"\n'
+        'tokio = { version = "1.35.0", features = ["full"] }\n'
+        'local = { path = "../local" }\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    found = {row[1]: row[2] for row in unpack(out["packed"])}
+    assert found == {"serde": "1.0.190", "tokio": "1.35.0"}, "path deps are not registry deps"
+
+
+def test_poetry_dependencies_are_read_without_tomllib(tmp_path, without_tomllib):
+    project = tmp_path / "poetry"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.poetry.dependencies]\npython = "^3.9"\nrequests = "^2.31.0"\n'
+        'numpy = { version = "1.26.4" }\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    found = {row[1]: row[2] for row in unpack(out["packed"])}
+    assert found == {"requests": "2.31.0", "numpy": "1.26.4"}
+
+
+def test_an_unparseable_manifest_warns_rather_than_reading_as_empty(
+        tmp_path, without_tomllib):
+    """The bug in its second form: a reduced reader finding nothing in a file
+    that plainly declares dependencies has failed, not succeeded."""
+    project = tmp_path / "broken"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project\nname = "api"\ndependencies = ["numpy==1.26"\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    assert out["count"] == 0
+    assert "pyproject.toml" not in out["manifests"], "claimed to have read it"
+    assert "cannot parse" in out["warning"]
+
+
+def test_a_manifest_that_truly_declares_nothing_does_not_warn(
+        tmp_path, without_tomllib):
+    """The other side of it: not every empty result is a failure."""
+    project = tmp_path / "bare"
+    project.mkdir()
+    (project / "pyproject.toml").write_text('[project]\nname = "api"\nversion = "1.0"\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    assert out["count"] == 0
+    assert not out.get("warning")
+
+
+def test_a_multiline_dependency_array_is_read_without_tomllib(
+        tmp_path, without_tomllib):
+    project = tmp_path / "multiline"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "api"\ndependencies = [\n'
+        '    "numpy>=1.26",   # the comment must not break it\n'
+        '    "scipy==1.11",\n]\n')
+    out = json.loads(run("parse_manifest.py", str(project),
+                         env=without_tomllib).stdout)
+    assert {row[1] for row in unpack(out["packed"])} == {"numpy", "scipy"}

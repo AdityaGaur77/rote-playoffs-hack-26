@@ -137,6 +137,52 @@ in history through the merge parent, so nothing is lost if the fan-in shape is
 preferred later — it is a better DAG on paper, with more parallelism, and worth
 revisiting after the deadline.
 
+### 0.1.2 — the Play committed the failure it exists to report
+
+Found by a reviewer running the published Play on a stock Mac, and it is the
+worst bug in the project's history because it broke the one promise the
+description makes.
+
+`tomllib` arrived in Python 3.11. `deps.toml` declares a 3.8 floor and stock
+macOS ships 3.9.6, so on a very ordinary machine `import tomllib` raised — and
+`from_pyproject` and `from_cargo` answered it with `return []`. Because they
+returned rather than raised, nothing reached the `except` that fills
+`unreadable`; the file was appended to `manifests` as though it had been read,
+`warning` was never set, and the stage rendered ok.
+
+Reproduced exactly: a JS front end beside a Python backend, an unremarkable
+layout.
+
+| | 3.11 | 3.9.6, before the fix |
+|---|---|---|
+| dependencies found | 3 | 1 |
+| `manifests` | both files | **both files** |
+| warning | none | **none** |
+| verdict | numpy and scipy flagged | "everything current" |
+
+Two findings to zero, silently, under a full green bar. *A missing tomllib was
+indistinguishable from a manifest that genuinely declares nothing* — which is
+precisely the confusion between "clean" and "never looked" that REVIEW exists
+to prevent.
+
+**Fixed in two parts, because a warning alone would leave every Mac user with a
+Play that cannot read their pyproject at all:**
+
+1. A small TOML reader — section headers, strings, inline tables, arrays of
+   strings — used when `tomllib` is absent. Same answer on 3.9 as on 3.11.
+2. The reduced reader refuses to return a silent zero. Finding nothing in a
+   file that plainly declares dependencies is a failure to read it, so it
+   raises, the existing handler records it as unreadable, and the warning
+   surfaces. A manifest that genuinely declares nothing still warns about
+   nothing.
+
+**Why the suite could not have caught it:** this interpreter has tomllib. The
+tests now take it away with a `PYTHONPATH` shim — and the shim must raise
+`ModuleNotFoundError` specifically, because the guard catches that subclass and
+a plain `ImportError` sails straight past it. My first reproduction attempt used
+the wrong one, appeared to show the reporter was mistaken, and was itself the
+bug in miniature: a check that cannot fail proves nothing.
+
 ### 0.1.1 — naming a truncated stage
 
 rote cuts a step's stdout at 65,536 bytes and still records the step as
@@ -349,14 +395,14 @@ tools/make_fixtures.py     <input.json>                       -> presentation fi
 play/main.ts               generated, 7 KB                    -> the Play
 play/resources/*.py        published copies of steps/         -> named by @resource{}
 play/deps.toml                                                -> declares python3
-tests/test_steps.py                                           -> 140 tests
+tests/test_steps.py                                           -> 148 tests
 smoke_test.sh
 ```
 
 Every step after the first also has a `--batch` form taking the previous step's
 output as one argv scalar. That is the chain the Play runs; see section 8.
 
-`python3 -m pytest tests/ -q` → **136 passed, 4 skipped**. The 4 skips are opt-in live
+`python3 -m pytest tests/ -q` → **144 passed, 4 skipped**. The 4 skips are opt-in live
 registry reads; enable with `ROTE_NET_TESTS=1`.
 
 ### Contracts every step honours

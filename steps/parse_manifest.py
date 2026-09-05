@@ -55,13 +55,103 @@ def from_package_json(path):
     return out
 
 
-def from_pyproject(path):
+# ---------------------------------------------------------------------------
+# tomllib landed in Python 3.11. This Play declares a 3.8 floor and stock macOS
+# ships 3.9.6, so on a very ordinary machine `import tomllib` fails. It used to
+# fail by returning [] -- which read as "this manifest declares nothing" rather
+# than "nobody could read this manifest", and a pyproject full of dependencies
+# vanished under a green stage bar. That is the exact failure this Play exists
+# to report, committed by the Play itself.
+#
+# So: tomllib when it is there, this reader when it is not, and a raise if
+# neither can read the file, which the caller already turns into a warning.
+# Deliberately small -- section headers, strings, inline tables and arrays of
+# strings. Enough for a dependency table and nothing more.
+# ---------------------------------------------------------------------------
+
+def _strip_comment(line):
+    out, quote = [], ""
+    for ch in line:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+            out.append(ch)
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+    return "".join(out).strip()
+
+
+def _toml_sections(text):
+    """{section name: {key: str | [str]}} for the shapes a manifest uses."""
+    sections, current = {}, ""
+    key, buffer = None, None
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        if not line:
+            continue
+        if buffer is not None:                       # inside a multi-line array
+            buffer.append(line)
+            if "]" in line:
+                joined = " ".join(buffer)
+                sections.setdefault(current, {})[key] = re.findall(
+                    r'["\']([^"\']*)["\']', joined.split("[", 1)[1])
+                key, buffer = None, None
+            continue
+        if line.startswith("[["):
+            current = line.strip("[]").strip()
+            sections.setdefault(current, {})
+            continue
+        if line.startswith("["):
+            current = line.strip("[]").strip()
+            sections.setdefault(current, {})
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip().strip('"\''), value.strip()
+        if value.startswith("[") and "]" not in value:
+            buffer = [value]
+            continue
+        if value.startswith("["):
+            sections.setdefault(current, {})[key] = re.findall(
+                r'["\']([^"\']*)["\']', value)
+        else:
+            sections.setdefault(current, {})[key] = value.strip('"\'')
+        if buffer is None:
+            key = None
+    return sections
+
+
+def _inline_version(value):
+    """'{ version = "1.2", features = [...] }' -> '1.2'; a bare string as-is."""
+    if isinstance(value, list):
+        return ""
+    if value.startswith("{"):
+        match = re.search(r'version\s*=\s*["\']([^"\']*)["\']', value)
+        return match.group(1) if match else ""
+    return value
+
+
+def _read_toml(path):
+    """The parsed document, or None when only the fallback reader is available."""
     try:
         import tomllib
     except ModuleNotFoundError:
-        return []
+        return None
     with open(path, "rb") as fh:
-        data = tomllib.load(fh)
+        return tomllib.load(fh)
+
+
+def from_pyproject(path):
+    data = _read_toml(path)
+    if data is None:
+        return _pyproject_fallback(path)
     out = []
     project = data.get("project") or {}
     for entry in project.get("dependencies") or []:
@@ -78,6 +168,55 @@ def from_pyproject(path):
     return out
 
 
+
+
+def _refuse_silent_empty(path, text, found):
+    """A reduced reader that finds nothing in a file that plainly declares
+    dependencies has failed to read it, not read it successfully. Raising is
+    what turns that into a warning instead of a second silent zero."""
+    if found:
+        return found
+    if re.search(r"(?m)^\s*\[[^\]]*dependencies\s*\]", text) or \
+            re.search(r"(?m)^\s*dependencies\s*=", text):
+        raise ValueError(
+            "declares a dependency table this Python cannot parse: tomllib "
+            "needs 3.11+ and the fallback reader could not read it")
+    return found
+
+
+def _pyproject_fallback(path):
+    """pyproject.toml without tomllib. Raises if it cannot read the file, so
+    the caller records it as unreadable instead of as empty."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    sections = _toml_sections(text)
+    out = []
+    for entry in sections.get("project", {}).get("dependencies") or []:
+        name = re.split(r"[<>=!~\[; ]", entry.strip(), maxsplit=1)[0]
+        if name:
+            out.append(("pypi", name, clean_version(entry)))
+    for name, spec in (sections.get("tool.poetry.dependencies") or {}).items():
+        if name.lower() == "python":
+            continue
+        out.append(("pypi", name, clean_version(_inline_version(spec))))
+    return _refuse_silent_empty(path, text, out)
+
+
+def _cargo_fallback(path):
+    """Cargo.toml without tomllib. Same contract: read it or raise."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    sections = _toml_sections(text)
+    out = []
+    for field in ("dependencies", "dev-dependencies"):
+        for name, spec in (sections.get(field) or {}).items():
+            if isinstance(spec, str) and spec.startswith("{"):
+                if re.search(r'\b(path|git)\s*=', spec):
+                    continue
+            out.append(("crates", name, clean_version(_inline_version(spec))))
+    return _refuse_silent_empty(path, text, out)
+
+
 def from_requirements(path):
     out = []
     with open(path, encoding="utf-8") as fh:
@@ -92,12 +231,9 @@ def from_requirements(path):
 
 
 def from_cargo(path):
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        return []
-    with open(path, "rb") as fh:
-        data = tomllib.load(fh)
+    data = _read_toml(path)
+    if data is None:
+        return _cargo_fallback(path)
     out = []
     for field in ("dependencies", "dev-dependencies"):
         for name, spec in (data.get(field) or {}).items():
