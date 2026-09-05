@@ -54,47 +54,40 @@ Reads npm (`package.json` / `package-lock.json` / `node_modules`) and Python
 never runs a package manager — so it cannot tell you what the *newest* version
 is, only whether the three things on your disk agree.
 
-## Status
+## Status — published
 
-Built and tested 2026-09-05. 49 tests. Not yet linted, run through rote, or
-published — those need the rote CLI.
+`adityagaur/lockfile-drift@0.1.1`, public, 13,244 bytes. `rote play lint`
+passes with **zero findings**; presentation fixtures cut from
+`run_20260905_211752.734_4`.
 
-Two bugs the fixture caught before anything shipped, both in the range reader:
+The DAG runs as designed — rote's own labelling:
 
-- `parts()` was handed the spec with its operator still attached, so every
-  caret and tilde range came back "not evaluated". That silently downgraded a
-  genuine out-of-range pin (`^4.17.21` against a locked `4.16.0`) from DRIFT to
-  UNCHECKED — the scanner reporting less than it knew.
-- A locked package absent from an install tree that *was* read is drift for a
-  production dependency (installing adds it) but not for a dev one, where the
-  tree may simply be a production install. Calling both drift would have
-  invented evidence; calling both unknown would have hidden it.
+```
+  [layer 1 — 3 parallel]
+    read_declared  @5  (31ms)
+    read_locked    @6  (30ms)
+    read_installed @7  (31ms)
+  [layer 2]
+    compare_pins   @8  (31ms)
+  Summary: 4/4 completed   Duration: 175ms
+```
 
-## Found on the first real run
+And the invariant held on a real tree with no lockfile and no venv: two stages
+degraded with named reasons, four UNCHECKED, **zero SYNCED**.
 
-Published 0.1.0 reported `EcoSlice contributors`, `src` and `tests` as declared
-dependencies of a perfectly ordinary pyproject. The reader was matching any
-`key = [...]` anywhere in the file, so `authors`, `classifiers`, `packages` and
-`[build-system] requires` all became dependencies.
+## Two bugs, both caught by running it rather than by testing it
+
+- The range reader was handed specs with the operator still attached, so every
+  caret and tilde came back "not evaluated" — which silently downgraded a
+  genuine out-of-range pin from DRIFT to UNCHECKED. Caught by the fixture,
+  before release.
+- Published 0.1.0 reported `EcoSlice contributors`, `src` and `tests` as
+  declared dependencies: the reader matched any `key = [...]` anywhere in the
+  file. Ten rows where four were real, each with a confident verdict attached.
+  Caught by the first run against a real project. Fixed in 0.1.1 — the reader
+  is section-aware and takes only `[project] dependencies`,
+  `[project.optional-dependencies]` and `[tool.poetry.dependencies]`.
 
 A reader that invents rows is the same failure as one that hides them, pointed
-the other way — and it is worse here than a miss, because every invented row
-arrives with a confident UNCHECKED verdict attached.
-
-Fixed in 0.1.1: the reader is section-aware and takes only
-`[project] dependencies`, `[project.optional-dependencies]` (labelled by group)
-and `[tool.poetry.dependencies]`. Build requirements are deliberately excluded —
-they install into the build environment, not yours, so reporting them answers a
-different question than the one asked.
-
-## Next
-
-    python3 lockdrift/tools/build_play.py
-    cp -r lockdrift/play/main.ts lockdrift/play/deps.toml lockdrift/play/resources \
-          ~/.rote/flows/lockfile-drift/
-    rote play lint lockfile-drift
-    rote play run ~/.rote/flows/lockfile-drift/main.ts root=<a real project>
-    python3 lockdrift/tools/make_fixtures.py <the run's input.json>
-    python3 lockdrift/tools/build_play.py     # declares presentation_fixtures
-    rote play lint lockfile-drift && rote play release lockfile-drift
-    cd /tmp && rote registry play push ~/.rote/flows/lockfile-drift/main.ts adityagaur
+the other way. It is arguably worse: a missing row is silence, an invented row
+is a claim.

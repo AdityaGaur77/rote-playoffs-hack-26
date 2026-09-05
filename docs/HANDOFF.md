@@ -70,7 +70,22 @@ simplification.
 
 ---
 
-## 0. It is published
+## 0. Both are published
+
+| Play | Version | State |
+|---|---|---|
+| `adityagaur/upgrade-impact-triage` | **0.1.2** | public, released, lint clean, scheduled daily |
+| `adityagaur/lockfile-drift` | **0.1.1** | public, released, lint clean, fixtures from a real run |
+
+Two Plays, two submissions — the rules count each published public Play
+separately and judges award prizes per Play.
+
+Each was caught violating the invariant it exists to enforce, once by a
+reviewer and once by its own first run. Both fixed, both republished, and the
+class of failure is now a test in each repo rather than a lesson. Section 7 and
+the lockdrift design note carry the details.
+
+## 0b. The first one is published
 
 ```
 https://play.modiqo.ai/adityagaur/upgrade-impact-triage@0.1.0
