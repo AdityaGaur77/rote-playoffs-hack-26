@@ -1,5 +1,14 @@
 # upgrade-impact-triage
 
+**Published:** https://play.modiqo.ai/adityagaur/upgrade-impact-triage@0.1.1
+
+```bash
+cd /tmp && rote play run https://play.modiqo.ai/adityagaur/upgrade-impact-triage --yes
+```
+
+Runs bare against the current directory. No credentials, no adapter, no declared writes —
+`rote play inspect` reports *Authentication: none*.
+
 A [Rote](https://github.com/modiqo/rote-releases) Play for the **Rote Playoffs** hackathon
 (1–6 September 2026), answering the question dependency tooling skips:
 
@@ -11,6 +20,22 @@ actual work of upgrading lives.
 
 Typical output shape: **3 of your 47 outdated dependencies have breaking changes in code you
 really use — here they are, with line numbers.** The other 44 are safe to bump blind.
+
+## A check that cannot fail proves nothing
+
+The rule this project keeps relearning, kept here because it has cost real
+findings three times:
+
+The first attempt to reproduce a reported bug raised `ImportError` where the
+guard catches `ModuleNotFoundError`. It sailed past, the warning surfaced, and
+the report looked mistaken. The check could not have failed — so it proved
+nothing, and it nearly cost a real fix.
+
+Every degradation test in this repo now asserts that the thing it disables is
+actually disabled: the `tomllib` shim asserts the import raises the subclass the
+guard catches; the truncation test asserts its fixture exceeds the cap it is
+testing; the invented-dependency test asserts each bad name is absent *by name*
+rather than counting rows.
 
 ## The ranking, which is the whole point
 
@@ -38,7 +63,20 @@ recorded exploration so the trace comes out in the right shape.
 | `steps/fetch_registry.py <eco> <name> [current]` | One dependency, one registry reading: latest version, major/minor/patch gap, GitHub source repo |
 | `steps/fetch_changelog.py <owner/repo> <cur> <latest>` | Read release notes in the version range and judge them breaking |
 | `steps/find_callsites.py <root> <eco> <name>` | Is it imported directly, and where — the step that separates this from Dependabot |
-| `steps/compute_verdict.py` | Join everything from stdin JSONL into the ranked verdict |
+| `steps/compute_verdict.py [records.jsonl]` | Join everything into the ranked verdict and render the report |
+
+Each of the four later scripts also has a `--batch` form that takes the *previous step's output*
+as one argv scalar, so the Play runs as a chain with nothing on disk between steps:
+
+```
+parse_manifest <root>
+  -> fetch_registry  --batch <upstream>
+  -> find_callsites  --batch <root> <upstream>
+  -> fetch_changelog --batch <upstream>
+  -> compute_verdict --batch <upstream>
+```
+
+The single-package forms are unchanged; `--batch` is what makes the Play portable.
 
 ### Step contract
 
@@ -52,6 +90,27 @@ delimited scalar (`chr(31)` fields, `chr(30)` records) because value-edge jq mus
 scalar. Standard library only, so `deps.toml` declares `python3` and nothing else — no adapter,
 no credentials, no declared writes, so a stranger runs it in one command.
 
+### The carrier record
+
+`--batch` stages share one 13-column record. Each fills its own columns and passes the rest
+through:
+
+| Cols | Filled by | Fields |
+|---|---|---|
+| 0–2 | `parse_manifest` | ecosystem, name, current |
+| 3–6 | `fetch_registry` | latest, repo, gap, outdated |
+| 7–9 | `find_callsites` | direct, files, first_site |
+| 10–12 | `fetch_changelog` | checked, breaking, markers |
+
+Booleans are `"1"` / `"0"` when known and **`""` when the stage that fills them has not run**.
+That third state is load-bearing and it is the honesty invariant applied to the pipeline itself: an
+unfilled column reads as UNKNOWN, never as a clean bill of health. Skip the registry stage and
+every row reports REVIEW rather than CURRENT; skip the call-site stage and they report REVIEW
+rather than SAFE. A stage that did not run can only widen REVIEW.
+
+A stage accepts either a whole upstream payload or a bare `packed` scalar, so the steps do not
+depend on whether the value edge resolves `.stdout.text` or `.stdout.json.packed`.
+
 ## Try it
 
 ```bash
@@ -62,18 +121,6 @@ no credentials, no declared writes, so a stranger runs it in one command.
 does everything would make rote record a single opaque step with no edges — nothing to
 parallelize, checkpoint, resume, or blame per source. During the recorded exploration each
 reading gets its own `rote proc run` capture, so independent readings become parallel root steps.
-
-## The join takes its input from the DAG, not from a file
-
-`compute_verdict.py --from-steps '<json>' '<json>' ...` folds the raw stdout of the upstream
-steps into one record per dependency, so the join can be fed by value edges instead of a
-records file somebody built by hand. Registry and call-site payloads are matched on
-`(ecosystem, name)`; changelog payloads only know a repository, so they are joined on the
-`repo` the registry step reported.
-
-A dependency whose call sites were never scanned comes back `REVIEW`, not `SAFE` — an absent
-`direct` flag means nobody looked, and this Play never reports an unknown as an all-clear.
-The file and `--from-steps` forms are asserted to produce identical output.
 
 ## Picking this up cold
 
@@ -88,7 +135,7 @@ python3 -m pytest tests/ -q                    # hermetic
 ROTE_NET_TESTS=1 python3 -m pytest tests/ -q   # plus live npm / PyPI / crates.io reads
 ```
 
-102 tests, all passing. Coverage includes the honesty invariant above, exact call-site line
+210 tests — 206 passing, 4 skipped by default. Coverage includes the honesty invariant above, exact call-site line
 numbers, comment filtering, vendor-directory exclusion, and the negative space — unknown package,
 unsupported ecosystem, empty directory, malformed manifest, empty stdin, bad invocation.
 
@@ -102,18 +149,54 @@ range selection, 404, rate limit, 500 — is covered without a network or a rate
 
 ## Publishing: the scripts travel with the Play
 
-A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine.
-`tools/inline_steps.py` emits a self-contained `python3 -c` argv prefix per step, so the exported
-`main.ts` carries the scripts instead of pointing at them:
+A recorded capture bakes in the absolute path it ran from, which exists on exactly one machine, so
+the Play has to carry the scripts rather than point at them. They are **published under
+`play/resources/` and named in argv by a `@resource{...}` token** — not embedded in argv, which
+rote rejects:
 
-```bash
-python3 tools/inline_steps.py --json
+```
+STEP_INLINE_CODE_PAYLOAD: argv[2] contains a line break and has 5343 characters,
+above the 256-character inline limit. Keep `process.exec` argv as command structure.
 ```
 
-Base64 keeps the encoded body free of quotes and shell metacharacters, and arguments still land in
-`sys.argv[1:]` exactly as they do when the file is run directly — no step script changes. Tests
-assert the inlined and file forms produce identical output and identical exit codes, including the
-fail-closed path.
+Two earlier designs — base64, then literal source in the frontmatter — passed every test in this
+repo and were rejected by the linter for exactly that. `main.ts` is 7 KB now instead of 64 KB, and
+the steps are ordinary Python files anyone can read before running them.
+
+Tests assert each published resource is byte-identical to the script this suite exercises, that
+the published copy still fails closed on an unreadable input, and that no argv element carries a
+line break or exceeds 256 characters.
+
+## The Play itself
+
+`play/main.ts` is **generated, never hand-edited** — it carries ~59 KB of base64, and a step fixed
+here but not regenerated there ships a Play that does something else.
+
+```bash
+python3 tools/build_play.py            # write play/main.ts
+python3 tools/build_play.py --check    # fail if a step changed since it was generated
+```
+
+The `--check` form runs in the test suite, so a stale Play is a test failure rather than a
+published surprise.
+
+It writes `play/main.ts` and `play/resources/`, and `--check` fails if either has drifted from
+`steps/`. The generator verifies itself: it parses the frontmatter with PyYAML and asserts no argv
+element breaks the inline limit — the rule that caught the previous design.
+
+rote's own syntax, confirmed against `modiqo/dns-propagation-check` and against the linter: a
+parameter is a bare `$root`, a value edge is `@step{$.stdout.text | fromjson | .packed}`, a
+published file is `@resource{name.py}`, and the body reads step outputs through the presentation
+SDK (`loadPresentationContext`, `ctx.step(stepName(...))`, `out.human()`).
+
+`play/deps.toml` declares `python3` and nothing else, in the schema rote accepts — `schema_version`
+plus `[[tools]]`, not a `[deps]` table — with `[[tools.install]]` candidates for brew and apt.
+`rote play release` treats a required tool with no install candidate as a share blocker, because a
+recipient without it otherwise learns they are stuck and nothing about how to get unstuck.
+
+`tools/make_fixtures.py` builds the presentation fixtures from a real run's durable input. It
+packages only stdout and stderr: the recorded body also carries cwd, invocation, artifact paths and
+environment, and a test plants a fake token in each of those to prove none of it reaches the Play.
 
 ## Optional GITHUB_TOKEN
 
@@ -144,10 +227,11 @@ Kept because each one would have shipped silently:
 
 ## Status
 
-The analysis payload is complete and tested. `fetch_changelog.py`'s *success* path is the one
-unverified piece — the GitHub API was unreachable from the machine it was developed on, so its
-parsing, version-range filtering and every degrade path are tested but the happy path needs one
-run where GitHub is reachable.
+The analysis payload is complete and tested, and the Play is generated end to end from it. The
+five-stage chain has been run against a live PyPI and a stub GitHub API, and every failure mode —
+empty upstream, malformed upstream, bad root, rate limit, a stage skipped entirely — is covered.
 
-Remaining: install rote (see [`docs/SETUP.md`](docs/SETUP.md)), run the recorded exploration, and
-publish. See [`docs/PLAN.md`](docs/PLAN.md).
+Remaining before publishing: run `rote play lint` and `rote play release`, and get into the
+`hackathon` org. See
+[`docs/HANDOFF.md`](docs/HANDOFF.md) for the ordered list and [`docs/PLAN.md`](docs/PLAN.md) for
+the reasoning.

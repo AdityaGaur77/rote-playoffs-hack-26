@@ -1,0 +1,27 @@
+# Runtime dependencies for lockfile-drift.
+#
+# Standard library Python and nothing else. No TOML parser is used on purpose:
+# tomllib is 3.11+ and tomli is a dependency, so pyproject and the Python
+# lockfiles are read by regex. That is a real limitation and it is stated in
+# the Play description rather than hidden.
+#
+# [[tools.install]] is not optional -- `rote play release` calls a required
+# tool with no install candidate a share blocker, and it is right to: a
+# recipient without python3 otherwise learns they are stuck and nothing about
+# how to proceed.
+
+schema_version = 1
+
+[[tools]]
+id = "python3"
+command = "python3"
+required = true
+version_requirement = ">=3.8"
+
+[[tools.install]]
+manager = "brew"
+package = "python@3"
+
+[[tools.install]]
+manager = "apt"
+package = "python3"
