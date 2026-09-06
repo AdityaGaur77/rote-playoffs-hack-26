@@ -72,14 +72,23 @@ simplification.
 
 ## 0. Both are published
 
-| Play | In the registry | In this branch | State |
-|---|---|---|---|
-| `adityagaur/upgrade-impact-triage` | **0.1.2** | 0.1.3, not yet pushed | public, released, lint clean, scheduled daily |
-| `adityagaur/lockfile-drift` | **0.1.1** | 0.1.1 | public, released, lint clean, fixtures from a real run |
+| Play | Version | State |
+|---|---|---|
+| `adityagaur/upgrade-impact-triage` | **0.1.3** | public, released, lint clean, scheduled daily |
+| `adityagaur/lockfile-drift` | **0.1.1** | public, released, lint clean, fixtures from a real run |
 
-0.1.3 is a strictly-better version of a Play that already works, not a fix for
-something broken — the entry is complete and secure on what is live. Section 9
-carries the commands to push it.
+Both verified the way criterion one asks — resolved from the public URI and run
+from `/tmp` by a copy that had never seen them. `lockfile-drift` reported
+`SETUP play installed`, so it came from the registry rather than off local disk:
+
+```
+https://play.modiqo.ai/adityagaur/upgrade-impact-triage
+https://play.modiqo.ai/adityagaur/lockfile-drift
+```
+
+Against an empty root both degrade and say so — "nothing to triage", "nothing
+declared to compare", every stage marked degraded rather than ok. Failing closed
+in public is the behaviour, not a fault.
 
 Two Plays, two submissions — the rules count each published public Play
 separately and judges award prizes per Play.
@@ -805,28 +814,13 @@ Both Plays are in the registry, public and released. The entry is complete: the
 rules say a submission is complete when the public Play URI opens and runs
 through rote, and both do. Everything below is optional.
 
-1. **Publish `upgrade-impact-triage@0.1.3`.** Committed as `fac8f0d`, live
-   version is 0.1.2. A strictly-better version of a working Play, not a fix for
-   something broken.
-   ```bash
-   cd ~/rote-playoffs-hack-26 && git pull
-   python3 -m pytest tests/ lockdrift/tests/ -q      # expect 206 passed, 4 skipped
-   python3 tools/build_play.py
-   rm -rf ~/.rote/flows/upgrade-impact-triage
-   mkdir -p ~/.rote/flows/upgrade-impact-triage
-   cp -r play/main.ts play/deps.toml play/resources ~/.rote/flows/upgrade-impact-triage/
-   rote play lint upgrade-impact-triage
-   rote play release upgrade-impact-triage
-   cd /tmp && rote registry play push ~/.rote/flows/upgrade-impact-triage/main.ts adityagaur
-   ```
-
-2. **The Discord post.** Drafted and unposted. It affects only the adoption and
+1. **The Discord post.** Drafted and unposted. It affects only the adoption and
    reach criterion — nothing about whether the entry counts.
 
-3. **The `hackathon` org invite.** Still outstanding; section 3 says how to tell
+2. **The `hackathon` org invite.** Still outstanding; section 3 says how to tell
    when it lands. Nothing depends on it any more.
 
-4. **The local lockdrift fixture commit** generated on the user's machine and
+3. **The local lockdrift fixture commit** generated on the user's machine and
    never committed.
 
 ### 9b. The publication runbook — every step below is already done
